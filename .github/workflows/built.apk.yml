@@ -21,7 +21,7 @@ jobs:
           cache: true
 
       - name: Create Android project files
-        run: flutter create --platforms=android --org com.rohitjagtap .
+        run: flutter create --platforms=android --org com.rohitjagtap --project-name agri_sprey_offline .
 
       - name: Install dependencies
         run: flutter pub get
