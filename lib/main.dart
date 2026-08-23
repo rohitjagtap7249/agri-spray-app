@@ -267,4 +267,18 @@ class AgriSprayApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'Agri Spray',
       theme: ThemeData(
-        useMater
+        useMaterial3: true,
+        colorSchemeSeed: Colors.green,
+      ),
+      home: Scaffold(
+        appBar: AppBar(
+          title: const Text('Agri Spray Offline'),
+        ),
+        body: const Center(
+          child: Text('Agri Spray app'),
+        ),
+      ),
+    );
+  }
+}
+
