@@ -11,7 +11,7 @@ jobs:
 
     steps:
       - name: Checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
@@ -21,7 +21,7 @@ jobs:
           cache: true
 
       - name: Create Android project files
-        run: flutter create --platforms=android .
+        run: flutter create --platforms=android --org com.rohitjagtap .
 
       - name: Install dependencies
         run: flutter pub get
@@ -34,3 +34,4 @@ jobs:
         with:
           name: agri-spray-release-apk
           path: build/app/outputs/flutter-apk/release/app-release.apk
+
