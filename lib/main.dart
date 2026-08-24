@@ -80,7 +80,7 @@ class AppDatabase {
 
   // Version 2 introduces plots, sprays and spray chemicals.
   // Existing chemical data is preserved.
-  static const int _databaseVersion = 2;
+  static const int _databaseVersion = 3;
 
   Database? _database;
 
@@ -113,6 +113,10 @@ class AppDatabase {
         ''');
 
         await _createNewTables(db);
+        await db.execute('''
+          CREATE UNIQUE INDEX IF NOT EXISTS idx_chemicals_name_ci
+          ON chemicals(name COLLATE NOCASE)
+        ''');
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         // Never delete the database.
@@ -122,8 +126,40 @@ class AppDatabase {
         if (oldVersion < 2) {
           await _createNewTables(db);
         }
+        if (oldVersion < 3) {
+          await _migrateChemicalNames(db);
+        }
       },
     );
+  }
+
+  Future<void> _migrateChemicalNames(Database db) async {
+    final rows = await db.query(
+      'chemicals',
+      columns: ['id', 'name'],
+      orderBy: 'id ASC',
+    );
+    final used = <String>{};
+    for (final row in rows) {
+      final id = row['id'] as int;
+      final original = row['name'].toString().trim();
+      var candidate = original;
+      var key = candidate.toLowerCase();
+      var suffix = 2;
+      while (used.contains(key)) {
+        candidate = '$original ($suffix)';
+        key = candidate.toLowerCase();
+        suffix++;
+      }
+      if (candidate != row['name'].toString()) {
+        await db.update('chemicals', {'name': candidate}, where: 'id = ?', whereArgs: [id]);
+      }
+      used.add(key);
+    }
+    await db.execute('''
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_chemicals_name_ci
+      ON chemicals(name COLLATE NOCASE)
+    ''');
   }
 
   Future<void> _createNewTables(Database db) async {
@@ -187,14 +223,32 @@ class AppDatabase {
     );
   }
 
+  Future<bool> chemicalNameExists(String name, {int? excludeId}) async {
+    final db = await database;
+    final clean = name.trim();
+    final rows = await db.query(
+      'chemicals',
+      columns: ['id'],
+      where: excludeId == null
+          ? 'name COLLATE NOCASE = ?'
+          : 'name COLLATE NOCASE = ? AND id != ?',
+      whereArgs: excludeId == null ? [clean] : [clean, excludeId],
+      limit: 1,
+    );
+    return rows.isNotEmpty;
+  }
+
   Future<void> addChemical({
     required String name,
     required double price,
   }) async {
     final db = await database;
-
+    final clean = name.trim();
+    if (await chemicalNameExists(clean)) {
+      throw StateError('Chemical already exists.');
+    }
     await db.insert('chemicals', {
-      'name': name.trim(),
+      'name': clean,
       'price': price,
     });
   }
@@ -205,11 +259,14 @@ class AppDatabase {
     required double price,
   }) async {
     final db = await database;
-
+    final clean = name.trim();
+    if (await chemicalNameExists(clean, excludeId: id)) {
+      throw StateError('Chemical already exists.');
+    }
     await db.update(
       'chemicals',
       {
-        'name': name.trim(),
+        'name': clean,
         'price': price,
       },
       where: 'id = ?',
@@ -318,13 +375,27 @@ class AppDatabase {
 
   Future<List<Map<String, dynamic>>> getSpraysForPlot(int plotId) async {
     final db = await database;
-
-    return db.query(
+    final sprays = await db.query(
       'sprays',
       where: 'plot_id = ?',
       whereArgs: [plotId],
       orderBy: 'spray_date DESC, id DESC',
     );
+    for (final spray in sprays) {
+      final sprayId = spray['id'] as int;
+      final water = (spray['water'] as num).toDouble();
+      final chemicals = await db.query(
+        'spray_chemicals',
+        where: 'spray_id = ?',
+        whereArgs: [sprayId],
+      );
+      spray['total_cost'] = chemicals.fold<double>(
+        0,
+        (sum, c) => sum + water * (c['dosage'] as num).toDouble() *
+            (c['price_per_unit'] as num).toDouble(),
+      );
+    }
+    return sprays;
   }
 
   Future<List<Map<String, dynamic>>> getSprayChemicals(
@@ -370,7 +441,7 @@ class AppDatabase {
           'chemical_name': chemical.name,
           'dosage': dosage,
           'price_per_unit': price,
-          'cost': dosage * price,
+          'cost': water * dosage * price,
         });
       }
 
@@ -476,7 +547,6 @@ class _HomePageState extends State<HomePage> {
   int _currentIndex = 0;
 
   final List<Widget> _pages = const [
-    DashboardPage(),
     PlotHistoryPage(),
     ChemicalsPage(),
   ];
@@ -497,11 +567,6 @@ class _HomePageState extends State<HomePage> {
             icon: Icon(Icons.home_outlined),
             selectedIcon: Icon(Icons.home),
             label: 'Home',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.history_outlined),
-            selectedIcon: Icon(Icons.history),
-            label: 'History',
           ),
           NavigationDestination(
             icon: Icon(Icons.science_outlined),
@@ -743,17 +808,31 @@ class _ChemicalsPageState extends State<ChemicalsPage> {
                   return;
                 }
 
-                if (isEditing) {
-                  await AppDatabase.instance.updateChemical(
-                    id: chemical['id'] as int,
-                    name: name,
-                    price: price,
+                final duplicate = await AppDatabase.instance.chemicalNameExists(
+                  name,
+                  excludeId: isEditing ? chemical['id'] as int : null,
+                );
+                if (duplicate) {
+                  ScaffoldMessenger.of(dialogContext).showSnackBar(
+                    const SnackBar(content: Text('Chemical already exists. Use a different name.')),
                   );
-                } else {
-                  await AppDatabase.instance.addChemical(
-                    name: name,
-                    price: price,
+                  return;
+                }
+                try {
+                  if (isEditing) {
+                    await AppDatabase.instance.updateChemical(
+                      id: chemical['id'] as int, name: name, price: price,
+                    );
+                  } else {
+                    await AppDatabase.instance.addChemical(
+                      name: name, price: price,
+                    );
+                  }
+                } on StateError {
+                  ScaffoldMessenger.of(dialogContext).showSnackBar(
+                    const SnackBar(content: Text('Chemical already exists. Use a different name.')),
                   );
+                  return;
                 }
 
                 if (!mounted) return;
@@ -979,7 +1058,7 @@ class _PlotHistoryPageState extends State<PlotHistoryPage> {
                 TextField(
                   controller: plotNameController,
                   decoration: const InputDecoration(
-                    labelText: 'Plot name or number',
+                    labelText: 'Plot name or number (optional)',
                     hintText: 'Example: Plot 2',
                     prefixIcon: Icon(Icons.landscape),
                   ),
@@ -988,7 +1067,7 @@ class _PlotHistoryPageState extends State<PlotHistoryPage> {
                 TextField(
                   controller: cropController,
                   decoration: const InputDecoration(
-                    labelText: 'Crop variety',
+                    labelText: 'Crop variety (optional)',
                     hintText: 'Example: Cotton',
                     prefixIcon: Icon(Icons.grass),
                   ),
@@ -1007,15 +1086,9 @@ class _PlotHistoryPageState extends State<PlotHistoryPage> {
                 final plotName = plotNameController.text.trim();
                 final crop = cropController.text.trim();
 
-                if (title.isEmpty ||
-                    plotName.isEmpty ||
-                    crop.isEmpty) {
+                if (title.isEmpty) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text(
-                        'Fill in title, plot name/number and crop variety.',
-                      ),
-                    ),
+                    const SnackBar(content: Text('Enter a title.')),
                   );
                   return;
                 }
@@ -1368,7 +1441,18 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
 
                     // The table is intentionally horizontally scrollable.
                     // Exactly six columns are shown.
-                    return SingleChildScrollView(
+                    final allSprayTotal = _sprays.fold<double>(
+                      0,
+                      (sum, spray) => sum + (spray['total_cost'] as num).toDouble(),
+                    );
+                    return ListView(
+                      padding: const EdgeInsets.only(bottom: 100),
+                      children: [
+                        const Padding(
+                          padding: EdgeInsets.fromLTRB(16, 12, 16, 4),
+                          child: Text('Tap a spray row to edit it.', style: TextStyle(color: Colors.grey)),
+                        ),
+                        SingleChildScrollView(
                       padding: const EdgeInsets.fromLTRB(
                         8,
                         12,
@@ -1457,6 +1541,7 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
                                 spray['notes'].toString();
 
                             return DataRow(
+                              onSelectChanged: (_) => _openSpray(spray),
                               cells: [
                                 DataCell(
                                   Text('${index + 1}'),
@@ -1497,6 +1582,22 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
                           },
                         ),
                       ),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                          child: Card(
+                            color: const Color(0xFFE3F2FD),
+                            elevation: 0,
+                            child: Padding(
+                              padding: const EdgeInsets.all(16),
+                              child: Text(
+                                'Total cost: ₹${allSprayTotal.toStringAsFixed(2)}',
+                                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFF0D47A1)),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
                     );
                   },
                 ),
@@ -1556,11 +1657,9 @@ class _AddSprayPageState extends State<AddSprayPage> {
 
   double get _totalCost {
     double total = 0;
-
     for (final chemical in _selectedChemicals) {
-      total += chemical.dosage * chemical.price;
+      total += _water * chemical.dosage * chemical.price;
     }
-
     return total;
   }
 
@@ -2036,7 +2135,7 @@ class _AddSprayPageState extends State<AddSprayPage> {
                               ),
                               const SizedBox(height: 8),
                               Text(
-                                'Chemical cost: ₹${chemical.cost.toStringAsFixed(2)}',
+                                'Cost: ${_formatNumber(_water)} × ${_formatNumber(chemical.dosage)} × ₹${chemical.price.toStringAsFixed(2)} = ₹${(_water * chemical.dosage * chemical.price).toStringAsFixed(2)}',
                                 style: const TextStyle(
                                   fontWeight: FontWeight.bold,
                                   color: Color(0xFF0D47A1),
