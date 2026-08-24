@@ -383,13 +383,20 @@ class AppDatabase {
 
   Future<List<Map<String, dynamic>>> getSpraysForPlot(int plotId) async {
     final db = await database;
-    final sprays = await db.query(
+    final rawSprays = await db.query(
       'sprays',
       where: 'plot_id = ?',
       whereArgs: [plotId],
       orderBy: 'spray_date DESC, id DESC',
     );
-    for (final spray in sprays) {
+
+    final sprays = <Map<String, dynamic>>[];
+
+    for (final row in rawSprays) {
+      // db.query() rows can be read-only in newer sqflite versions,
+      // so copy into a mutable map before adding computed fields.
+      final spray = Map<String, dynamic>.from(row);
+
       final sprayId = spray['id'] as int;
       final water = (spray['water'] as num).toDouble();
       final chemicals = await db.query(
@@ -402,7 +409,10 @@ class AppDatabase {
         (sum, c) => sum + water * (c['dosage'] as num).toDouble() *
             (c['price_per_unit'] as num).toDouble(),
       );
+
+      sprays.add(spray);
     }
+
     return sprays;
   }
 
