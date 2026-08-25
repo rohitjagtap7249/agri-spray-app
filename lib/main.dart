@@ -25,7 +25,7 @@ class AgriSprayOfflineApp extends StatelessWidget {
 
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'SprayBook',
+      title: 'FarmBook',
       theme: ThemeData(
         useMaterial3: true,
         scaffoldBackgroundColor: Colors.white,
@@ -717,6 +717,375 @@ class AppDatabase {
   }
 
 
+  // ------------------------------------------------------------
+  // HISTORY BACKUP / RESTORE
+  // ------------------------------------------------------------
+
+  Future<Map<String, dynamic>> exportHistory() async {
+    final db = await database;
+
+    final plots = await db.query('plots', orderBy: 'id ASC');
+    final sprays = await db.query('sprays', orderBy: 'id ASC');
+    final sprayChemicals = await db.query('spray_chemicals', orderBy: 'id ASC');
+    final drips = await db.query('drip_applications', orderBy: 'id ASC');
+    final dripChemicals = await db.query('drip_chemicals', orderBy: 'id ASC');
+
+    return {
+      'format': 'FarmBook spray history backup',
+      'version': 1,
+      'exported_at': DateTime.now().toIso8601String(),
+      'plots': plots.map(Map<String, dynamic>.from).toList(),
+      'sprays': sprays.map(Map<String, dynamic>.from).toList(),
+      'spray_chemicals':
+          sprayChemicals.map(Map<String, dynamic>.from).toList(),
+      'drip_applications': drips.map(Map<String, dynamic>.from).toList(),
+      'drip_chemicals':
+          dripChemicals.map(Map<String, dynamic>.from).toList(),
+    };
+  }
+
+  Future<Map<String, int>> restoreHistory(
+    Map<String, dynamic> payload,
+  ) async {
+    final db = await database;
+
+    final rawPlots = payload['plots'];
+    final rawSprays = payload['sprays'];
+    final rawSprayChemicals = payload['spray_chemicals'];
+    final rawDrips = payload['drip_applications'];
+    final rawDripChemicals = payload['drip_chemicals'];
+
+    if (rawPlots is! List ||
+        rawSprays is! List ||
+        rawSprayChemicals is! List ||
+        rawDrips is! List ||
+        rawDripChemicals is! List) {
+      throw const FormatException(
+        'This is not a valid FarmBook history backup.',
+      );
+    }
+
+    int plotsAdded = 0;
+    int spraysAdded = 0;
+    int dripsAdded = 0;
+    int skipped = 0;
+
+    await db.transaction((txn) async {
+      final plotIdMap = <int, int>{};
+
+      // Match plots by their user-visible information. If the plot already
+      // exists, reuse it rather than creating a duplicate plot.
+      for (final item in rawPlots) {
+        if (item is! Map) {
+          skipped++;
+          continue;
+        }
+
+        final oldId = _backupInt(item['id']);
+        final title = item['title']?.toString().trim() ?? '';
+        final plotName = item['plot_name']?.toString().trim() ?? '';
+        final crop = item['crop_variety']?.toString().trim() ?? '';
+        final createdAt = item['created_at']?.toString() ??
+            DateTime.now().toIso8601String();
+
+        if (oldId == null || title.isEmpty) {
+          skipped++;
+          continue;
+        }
+
+        final existing = await txn.query(
+          'plots',
+          columns: ['id'],
+          where: 'title = ? AND plot_name = ? AND crop_variety = ?',
+          whereArgs: [title, plotName, crop],
+          limit: 1,
+        );
+
+        if (existing.isNotEmpty) {
+          plotIdMap[oldId] = existing.first['id'] as int;
+        } else {
+          final newId = await txn.insert('plots', {
+            'title': title,
+            'plot_name': plotName,
+            'crop_variety': crop,
+            'created_at': createdAt,
+          });
+          plotIdMap[oldId] = newId;
+          plotsAdded++;
+        }
+      }
+
+      final sprayChemicalGroups = <int, List<Map<String, dynamic>>>{};
+      for (final item in rawSprayChemicals) {
+        if (item is! Map) continue;
+        final sprayId = _backupInt(item['spray_id']);
+        if (sprayId == null) continue;
+        sprayChemicalGroups.putIfAbsent(sprayId, () => []).add(
+              Map<String, dynamic>.from(item),
+            );
+      }
+
+      final dripChemicalGroups = <int, List<Map<String, dynamic>>>{};
+      for (final item in rawDripChemicals) {
+        if (item is! Map) continue;
+        final dripId = _backupInt(item['drip_id']);
+        if (dripId == null) continue;
+        dripChemicalGroups.putIfAbsent(dripId, () => []).add(
+              Map<String, dynamic>.from(item),
+            );
+      }
+
+      // Restore sprays. Exact duplicates are skipped, so importing the same
+      // backup twice will not create a second copy of the same history.
+      for (final item in rawSprays) {
+        if (item is! Map) {
+          skipped++;
+          continue;
+        }
+
+        final oldId = _backupInt(item['id']);
+        final oldPlotId = _backupInt(item['plot_id']);
+        final plotId = oldPlotId == null ? null : plotIdMap[oldPlotId];
+        final date = item['spray_date']?.toString() ?? '';
+        final water = _backupDouble(item['water']);
+        final totalCost = _backupDouble(item['total_cost']);
+        final notes = item['notes']?.toString() ?? '';
+        final createdAt = item['created_at']?.toString() ??
+            DateTime.now().toIso8601String();
+
+        if (oldId == null || plotId == null || date.isEmpty || water == null ||
+            totalCost == null) {
+          skipped++;
+          continue;
+        }
+
+        final chemicals = sprayChemicalGroups[oldId] ?? [];
+        final duplicate = await _sprayAlreadyExists(
+          txn,
+          plotId: plotId,
+          date: date,
+          water: water,
+          notes: notes,
+          chemicals: chemicals,
+        );
+
+        if (duplicate) {
+          skipped++;
+          continue;
+        }
+
+        final newSprayId = await txn.insert('sprays', {
+          'plot_id': plotId,
+          'spray_date': date,
+          'water': water,
+          'total_cost': totalCost,
+          'notes': notes,
+          'created_at': createdAt,
+        });
+
+        for (final chemical in chemicals) {
+          final name = chemical['chemical_name']?.toString() ?? '';
+          final dosage = _backupDouble(chemical['dosage']);
+          final price = _backupDouble(chemical['price_per_unit']);
+          final cost = _backupDouble(chemical['cost']);
+          if (name.isEmpty || dosage == null || price == null || cost == null) {
+            continue;
+          }
+
+          await txn.insert('spray_chemicals', {
+            'spray_id': newSprayId,
+            'chemical_id': _backupInt(chemical['chemical_id']),
+            'chemical_name': name,
+            'dosage': dosage,
+            'price_per_unit': price,
+            'cost': cost,
+          });
+        }
+        spraysAdded++;
+      }
+
+      // Restore drip applications too, because drip records are part of the
+      // same plot history in FarmBook.
+      for (final item in rawDrips) {
+        if (item is! Map) {
+          skipped++;
+          continue;
+        }
+
+        final oldId = _backupInt(item['id']);
+        final oldPlotId = _backupInt(item['plot_id']);
+        final plotId = oldPlotId == null ? null : plotIdMap[oldPlotId];
+        final date = item['drip_date']?.toString() ?? '';
+        final acres = _backupDouble(item['acres']);
+        final totalCost = _backupDouble(item['total_cost']);
+        final notes = item['notes']?.toString() ?? '';
+        final createdAt = item['created_at']?.toString() ??
+            DateTime.now().toIso8601String();
+
+        if (oldId == null || plotId == null || date.isEmpty || acres == null ||
+            totalCost == null) {
+          skipped++;
+          continue;
+        }
+
+        final chemicals = dripChemicalGroups[oldId] ?? [];
+        final duplicate = await _dripAlreadyExists(
+          txn,
+          plotId: plotId,
+          date: date,
+          acres: acres,
+          notes: notes,
+          chemicals: chemicals,
+        );
+
+        if (duplicate) {
+          skipped++;
+          continue;
+        }
+
+        final newDripId = await txn.insert('drip_applications', {
+          'plot_id': plotId,
+          'drip_date': date,
+          'acres': acres,
+          'total_cost': totalCost,
+          'notes': notes,
+          'created_at': createdAt,
+        });
+
+        for (final chemical in chemicals) {
+          final name = chemical['chemical_name']?.toString() ?? '';
+          final dosage = _backupDouble(chemical['dosage']);
+          final unit = chemical['dosage_unit']?.toString() ?? '';
+          final price = _backupDouble(chemical['price_per_unit']);
+          final cost = _backupDouble(chemical['cost']);
+          if (name.isEmpty || dosage == null || unit.isEmpty || price == null ||
+              cost == null) {
+            continue;
+          }
+
+          await txn.insert('drip_chemicals', {
+            'drip_id': newDripId,
+            'chemical_id': _backupInt(chemical['chemical_id']),
+            'chemical_name': name,
+            'dosage': dosage,
+            'dosage_unit': unit,
+            'price_per_unit': price,
+            'cost': cost,
+          });
+        }
+        dripsAdded++;
+      }
+    });
+
+    return {
+      'plots_added': plotsAdded,
+      'sprays_added': spraysAdded,
+      'drips_added': dripsAdded,
+      'skipped': skipped,
+    };
+  }
+
+  Future<bool> _sprayAlreadyExists(
+    DatabaseExecutor txn, {
+    required int plotId,
+    required String date,
+    required double water,
+    required String notes,
+    required List<Map<String, dynamic>> chemicals,
+  }) async {
+    final rows = await txn.query(
+      'sprays',
+      columns: ['id'],
+      where: 'plot_id = ? AND spray_date = ? AND water = ? AND notes = ?',
+      whereArgs: [plotId, date, water, notes],
+    );
+
+    for (final row in rows) {
+      final existing = await txn.query(
+        'spray_chemicals',
+        where: 'spray_id = ?',
+        whereArgs: [row['id']],
+        orderBy: 'id ASC',
+      );
+      if (_chemicalRowsMatch(existing, chemicals, isDrip: false)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  Future<bool> _dripAlreadyExists(
+    DatabaseExecutor txn, {
+    required int plotId,
+    required String date,
+    required double acres,
+    required String notes,
+    required List<Map<String, dynamic>> chemicals,
+  }) async {
+    final rows = await txn.query(
+      'drip_applications',
+      columns: ['id'],
+      where: 'plot_id = ? AND drip_date = ? AND acres = ? AND notes = ?',
+      whereArgs: [plotId, date, acres, notes],
+    );
+
+    for (final row in rows) {
+      final existing = await txn.query(
+        'drip_chemicals',
+        where: 'drip_id = ?',
+        whereArgs: [row['id']],
+        orderBy: 'id ASC',
+      );
+      if (_chemicalRowsMatch(existing, chemicals, isDrip: true)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool _chemicalRowsMatch(
+    List<Map<String, dynamic>> existing,
+    List<Map<String, dynamic>> backup,
+    {required bool isDrip},
+  ) {
+    if (existing.length != backup.length) return false;
+
+    for (var i = 0; i < existing.length; i++) {
+      final a = existing[i];
+      final b = backup[i];
+      if (a['chemical_name'].toString() != b['chemical_name'].toString()) {
+        return false;
+      }
+      if (!_sameDouble(a['dosage'], b['dosage'])) return false;
+      if (!_sameDouble(a['price_per_unit'], b['price_per_unit'])) return false;
+      if (!_sameDouble(a['cost'], b['cost'])) return false;
+      if (isDrip &&
+          a['dosage_unit'].toString() != b['dosage_unit'].toString()) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  bool _sameDouble(dynamic a, dynamic b) {
+    final da = _backupDouble(a);
+    final db = _backupDouble(b);
+    if (da == null || db == null) return false;
+    return (da - db).abs() < 0.000001;
+  }
+
+  int? _backupInt(dynamic value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return int.tryParse(value?.toString() ?? '');
+  }
+
+  double? _backupDouble(dynamic value) {
+    if (value is num) return value.toDouble();
+    return double.tryParse(value?.toString() ?? '');
+  }
+
+
 }
 
 // ============================================================
@@ -814,7 +1183,7 @@ class DashboardPage extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('SprayBook'),
+        title: const Text('FarmBook'),
       ),
       body: ListView(
         padding: const EdgeInsets.all(20),
@@ -826,7 +1195,7 @@ class DashboardPage extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           const Text(
-            'SprayBook',
+            'FarmBook',
             textAlign: TextAlign.center,
             style: TextStyle(
               fontSize: 26,
@@ -1125,7 +1494,7 @@ class _ChemicalsPageState extends State<ChemicalsPage> {
     try {
       final chemicals = await AppDatabase.instance.getChemicals();
       final payload = {
-        'format': 'SprayBook chemical database',
+        'format': 'FarmBook chemical database',
         'version': 1,
         'exported_at': DateTime.now().toIso8601String(),
         'chemicals': chemicals
@@ -1141,7 +1510,7 @@ class _ChemicalsPageState extends State<ChemicalsPage> {
 
       final jsonText = const JsonEncoder.withIndent('  ').convert(payload);
       final fileName =
-          'SprayBook_chemicals_${DateTime.now().millisecondsSinceEpoch}.json';
+          'FarmBook_chemicals_${DateTime.now().millisecondsSinceEpoch}.json';
 
       final path = await FilePicker.platform.saveFile(
         dialogTitle: 'Export Chemical Database',
@@ -1157,7 +1526,7 @@ class _ChemicalsPageState extends State<ChemicalsPage> {
       if (!mounted) return;
       await Share.shareXFiles(
         [XFile(path)],
-        text: 'SprayBook chemical database',
+        text: 'FarmBook chemical database',
       );
     } catch (e) {
       if (!mounted) return;
@@ -1182,7 +1551,7 @@ class _ChemicalsPageState extends State<ChemicalsPage> {
       final decoded = jsonDecode(text);
 
       if (decoded is! Map<String, dynamic>) {
-        throw const FormatException('Invalid SprayBook JSON file.');
+        throw const FormatException('Invalid FarmBook JSON file.');
       }
 
       final rawChemicals = decoded['chemicals'];
@@ -1517,6 +1886,111 @@ class _PlotHistoryPageState extends State<PlotHistoryPage> {
     cropController.dispose();
   }
 
+  Future<void> _exportHistory() async {
+    try {
+      final payload = await AppDatabase.instance.exportHistory();
+      final jsonText = const JsonEncoder.withIndent('  ').convert(payload);
+      final fileName =
+          'FarmBook_history_${DateTime.now().millisecondsSinceEpoch}.json';
+
+      final path = await FilePicker.platform.saveFile(
+        dialogTitle: 'Backup Spray History',
+        fileName: fileName,
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+
+      if (path == null) return;
+
+      await File(path).writeAsString(jsonText, flush: true);
+
+      if (!mounted) return;
+      await Share.shareXFiles(
+        [XFile(path)],
+        text: 'FarmBook spray history backup',
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('History backup failed: $e')),
+      );
+    }
+  }
+
+  Future<void> _importHistory() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+        withData: false,
+      );
+
+      if (result == null || result.files.single.path == null) return;
+
+      final path = result.files.single.path!;
+      final text = await File(path).readAsString();
+      final decoded = jsonDecode(text);
+
+      if (decoded is! Map<String, dynamic>) {
+        throw const FormatException('Invalid FarmBook history backup.');
+      }
+
+      if (decoded['format']?.toString() != 'FarmBook spray history backup' &&
+          decoded['format']?.toString() != 'SprayBook spray history backup') {
+        throw const FormatException(
+          'This file is not a FarmBook spray history backup.',
+        );
+      }
+
+      final shouldRestore = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Restore Spray History?'),
+          content: const Text(
+            'The backup will be added to your existing history. '
+            'Existing data will not be deleted. Exact duplicate records '
+            'will be skipped.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Restore'),
+            ),
+          ],
+        ),
+      );
+
+      if (shouldRestore != true) return;
+
+      final resultCounts = await AppDatabase.instance.restoreHistory(decoded);
+      await _loadPlots();
+
+      if (!mounted) return;
+      final plotsAdded = resultCounts['plots_added'] ?? 0;
+      final spraysAdded = resultCounts['sprays_added'] ?? 0;
+      final dripsAdded = resultCounts['drips_added'] ?? 0;
+      final skipped = resultCounts['skipped'] ?? 0;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Restore complete: $plotsAdded plots, $spraysAdded sprays, '
+            '$dripsAdded drips added${skipped == 0 ? '' : ', $skipped skipped'}.',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('History restore failed: $e')),
+      );
+    }
+  }
+
   Future<void> _deletePlot(
     Map<String, dynamic> plot,
   ) async {
@@ -1574,6 +2048,36 @@ class _PlotHistoryPageState extends State<PlotHistoryPage> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Spray History'),
+        actions: [
+          PopupMenuButton<String>(
+            tooltip: 'Backup or restore history',
+            onSelected: (value) {
+              if (value == 'backup') {
+                _exportHistory();
+              } else if (value == 'restore') {
+                _importHistory();
+              }
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(
+                value: 'backup',
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.upload_file),
+                  title: Text('Spray History Backup'),
+                ),
+              ),
+              PopupMenuItem(
+                value: 'restore',
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.download),
+                  title: Text('Spray History Restore'),
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
       floatingActionButton: FloatingActionButton.extended(
         backgroundColor: const Color(0xFF0D47A1),
