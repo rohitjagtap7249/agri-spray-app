@@ -1362,6 +1362,304 @@ class _ChemicalsPageState extends State<ChemicalsPage> {
 
 
 // ============================================================
+// PLOT HISTORY
+// ============================================================
+
+class PlotHistoryPage extends StatefulWidget {
+  const PlotHistoryPage({
+    super.key,
+    this.standalone = false,
+  });
+
+  final bool standalone;
+
+  @override
+  State<PlotHistoryPage> createState() => _PlotHistoryPageState();
+}
+
+class _PlotHistoryPageState extends State<PlotHistoryPage> {
+  List<Map<String, dynamic>> _plots = [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPlots();
+  }
+
+  Future<void> _loadPlots() async {
+    try {
+      final plots = await AppDatabase.instance.getPlots();
+
+      if (!mounted) return;
+
+      setState(() {
+        _plots = plots;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() {
+        _loading = false;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not load plots: $e')),
+      );
+    }
+  }
+
+  Future<void> _showPlotDialog({
+    Map<String, dynamic>? plot,
+  }) async {
+    final titleController = TextEditingController(
+      text: plot == null ? '' : plot['title'].toString(),
+    );
+
+    final plotNameController = TextEditingController(
+      text: plot == null ? '' : plot['plot_name'].toString(),
+    );
+
+    final cropController = TextEditingController(
+      text: plot == null ? '' : plot['crop_variety'].toString(),
+    );
+
+    final editing = plot != null;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: Text(
+            editing ? 'Edit plot / crop' : 'Add plot / crop',
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: titleController,
+                  decoration: const InputDecoration(
+                    labelText: 'Title',
+                    hintText: 'Example: Farm 1 - Cotton',
+                    prefixIcon: Icon(Icons.title),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: plotNameController,
+                  decoration: const InputDecoration(
+                    labelText: 'Plot name or number (optional)',
+                    hintText: 'Example: Plot 2',
+                    prefixIcon: Icon(Icons.landscape),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: cropController,
+                  decoration: const InputDecoration(
+                    labelText: 'Crop variety (optional)',
+                    hintText: 'Example: Cotton',
+                    prefixIcon: Icon(Icons.grass),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                final title = titleController.text.trim();
+                final plotName = plotNameController.text.trim();
+                final crop = cropController.text.trim();
+
+                if (title.isEmpty) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Enter a title.')),
+                  );
+                  return;
+                }
+
+                if (editing) {
+                  await AppDatabase.instance.updatePlot(
+                    id: plot['id'] as int,
+                    title: title,
+                    plotName: plotName,
+                    cropVariety: crop,
+                  );
+                } else {
+                  await AppDatabase.instance.addPlot(
+                    title: title,
+                    plotName: plotName,
+                    cropVariety: crop,
+                  );
+                }
+
+                if (!mounted) return;
+
+                Navigator.pop(dialogContext);
+                await _loadPlots();
+              },
+              child: Text(editing ? 'Save' : 'Add'),
+            ),
+          ],
+        );
+      },
+    );
+
+    titleController.dispose();
+    plotNameController.dispose();
+    cropController.dispose();
+  }
+
+  Future<void> _deletePlot(
+    Map<String, dynamic> plot,
+  ) async {
+    final delete = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Delete plot / crop?'),
+          content: Text(
+            'This will also delete all spray records belonging to "${plot['title']}".',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: Colors.red,
+              ),
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Delete'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (delete != true) return;
+
+    await AppDatabase.instance.deletePlot(
+      plot['id'] as int,
+    );
+
+    await _loadPlots();
+  }
+
+  Future<void> _openPlot(Map<String, dynamic> plot) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => PlotSpraysPage(
+          plotId: plot['id'] as int,
+          plotTitle: plot['title'].toString(),
+          plotName: plot['plot_name'].toString(),
+          cropVariety: plot['crop_variety'].toString(),
+        ),
+      ),
+    );
+
+    await _loadPlots();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Spray History'),
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        backgroundColor: const Color(0xFF0D47A1),
+        foregroundColor: Colors.white,
+        onPressed: () => _showPlotDialog(),
+        icon: const Icon(Icons.add),
+        label: const Text('Add plot / crop'),
+      ),
+      body: _loading
+          ? const Center(
+              child: CircularProgressIndicator(),
+            )
+          : _plots.isEmpty
+              ? const Center(
+                  child: Padding(
+                    padding: EdgeInsets.all(30),
+                    child: Text(
+                      'No plots saved yet.\n\nCreate a plot/crop title to start recording sprays.',
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                )
+              : RefreshIndicator(
+                  onRefresh: _loadPlots,
+                  child: ListView.separated(
+                    padding: const EdgeInsets.fromLTRB(
+                      12,
+                      12,
+                      12,
+                      100,
+                    ),
+                    itemCount: _plots.length,
+                    separatorBuilder: (_, __) =>
+                        const SizedBox(height: 6),
+                    itemBuilder: (context, index) {
+                      final plot = _plots[index];
+
+                      // The first history page intentionally displays
+                      // only the saved plot/crop title.
+                      return Card(
+                        child: ListTile(
+                          title: Text(
+                            plot['title'].toString(),
+                            style: const TextStyle(
+                              fontSize: 17,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF0D47A1),
+                            ),
+                          ),
+                          trailing: PopupMenuButton<String>(
+                            onSelected: (value) {
+                              if (value == 'open') {
+                                _openPlot(plot);
+                              } else if (value == 'edit') {
+                                _showPlotDialog(plot: plot);
+                              } else if (value == 'delete') {
+                                _deletePlot(plot);
+                              }
+                            },
+                            itemBuilder: (_) => const [
+                              PopupMenuItem(
+                                value: 'open',
+                                child: Text('Open'),
+                              ),
+                              PopupMenuItem(
+                                value: 'edit',
+                                child: Text('Edit'),
+                              ),
+                              PopupMenuItem(
+                                value: 'delete',
+                                child: Text('Delete'),
+                              ),
+                            ],
+                          ),
+                          onTap: () => _openPlot(plot),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+    );
+  }
+}
+
+
+// ============================================================
 // PLOT HISTORY / SPRAY + DRIP PAGE
 // ============================================================
 
