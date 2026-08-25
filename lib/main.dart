@@ -1045,9 +1045,9 @@ class AppDatabase {
 
   bool _chemicalRowsMatch(
     List<Map<String, dynamic>> existing,
-    List<Map<String, dynamic>> backup,
-    {required bool isDrip},
-  ) {
+    List<Map<String, dynamic>> backup, {
+    required bool isDrip,
+  }) {
     if (existing.length != backup.length) return false;
 
     for (var i = 0; i < existing.length; i++) {
