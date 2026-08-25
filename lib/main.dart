@@ -1,39 +1,70 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+
 import 'package:file_picker/file_picker.dart';
+
 import 'package:flutter/material.dart';
-import 'package:path/path.dart' as p;
 import 'package:share_plus/share_plus.dart';
+import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await AppDb.instance.db;
-  runApp(const AgriSprayApp());
+  await AppDatabase.instance.database;
+  runApp(const AgriSprayOfflineApp());
 }
 
-class AgriSprayApp extends StatelessWidget {
-  const AgriSprayApp({super.key});
+class AgriSprayOfflineApp extends StatelessWidget {
+  const AgriSprayOfflineApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    const blue = Color(0xFF0D47A1);
+    const skyBlue = Color(0xFF42A5F5);
+    const darkBlue = Color(0xFF0D47A1);
+
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'SprayBook',
       theme: ThemeData(
         useMaterial3: true,
         scaffoldBackgroundColor: Colors.white,
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF42A5F5)),
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: skyBlue,
+          primary: darkBlue,
+          secondary: skyBlue,
+          surface: Colors.white,
+        ),
         appBarTheme: const AppBarTheme(
-          backgroundColor: Color(0xFF42A5F5),
+          backgroundColor: skyBlue,
           foregroundColor: Colors.white,
+          elevation: 0,
+          centerTitle: false,
+        ),
+        elevatedButtonTheme: ElevatedButtonThemeData(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: darkBlue,
+            foregroundColor: Colors.white,
+            minimumSize: const Size(0, 48),
+          ),
         ),
         inputDecorationTheme: InputDecorationTheme(
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: const BorderSide(color: Colors.grey),
+          ),
           focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(10),
-            borderSide: const BorderSide(color: blue, width: 2),
+            borderSide: const BorderSide(
+              color: darkBlue,
+              width: 2,
+            ),
           ),
+          filled: true,
+          fillColor: Colors.white,
         ),
       ),
       home: const HomePage(),
@@ -41,19 +72,43 @@ class AgriSprayApp extends StatelessWidget {
   }
 }
 
-class AppDb {
-  AppDb._();
-  static final instance = AppDb._();
+// ============================================================
+// DATABASE
+// ============================================================
+
+class AppDatabase {
+  AppDatabase._();
+
+  static final AppDatabase instance = AppDatabase._();
+
+  static const String _databaseName = 'agri_spray_offline.db';
+
+  // Version 2 introduces plots, sprays and spray chemicals.
+  // Existing chemical data is preserved.
+  static const int _databaseVersion = 4;
+
   Database? _database;
 
-  Future<Database> get db async {
-    if (_database != null) return _database!;
-    final dir = await getDatabasesPath();
-    final file = p.join(dir, 'agri_spray_offline.db');
-    _database = await openDatabase(
-      file,
-      version: 4,
+  Future<Database> get database async {
+    if (_database != null) {
+      return _database!;
+    }
+
+    _database = await _openDatabase();
+    return _database!;
+  }
+
+  Future<Database> _openDatabase() async {
+    final databasesPath = await getDatabasesPath();
+    final path = p.join(databasesPath, _databaseName);
+
+    return openDatabase(
+      path,
+      version: _databaseVersion,
       onCreate: (db, version) async {
+        // IMPORTANT:
+        // We do not recreate/reset the chemical table here.
+        // This is the first creation of the database, so create it.
         await db.execute('''
           CREATE TABLE IF NOT EXISTS chemicals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,18 +116,71 @@ class AppDb {
             price REAL NOT NULL DEFAULT 0
           )
         ''');
-        await _newTables(db);
+
+        await _createNewTables(db);
+        await _createDripTables(db);
+        await db.execute('''
+          CREATE UNIQUE INDEX IF NOT EXISTS idx_chemicals_name_ci
+          ON chemicals(name COLLATE NOCASE)
+        ''');
       },
       onUpgrade: (db, oldVersion, newVersion) async {
-        // Never delete/reset the existing database or chemical records.
-        // _newTables() uses CREATE IF NOT EXISTS, so it is safe for old databases.
-        if (oldVersion < 4) await _newTables(db);
+        // Never delete the database.
+        // Never drop the chemicals table.
+        //
+        // The existing chemical records remain untouched.
+        if (oldVersion < 2) {
+          await _createNewTables(db);
+        }
+        if (oldVersion < 3) {
+          await _migrateChemicalNames(db);
+        }
+        if (oldVersion < 4) {
+          await _createDripTables(db);
+        }
+      },
+      onOpen: (db) async {
+        // Safety net: if a previous install ever stamped the database
+        // at the current version without these tables existing (e.g.
+        // during development), onUpgrade will never run again. Re-run
+        // the idempotent (IF NOT EXISTS) creation here on every open
+        // so the app can self-heal instead of failing silently.
+        await _createNewTables(db);
+        await _createDripTables(db);
       },
     );
-    return _database!;
   }
 
-  Future<void> _newTables(Database db) async {
+  Future<void> _migrateChemicalNames(Database db) async {
+    final rows = await db.query(
+      'chemicals',
+      columns: ['id', 'name'],
+      orderBy: 'id ASC',
+    );
+    final used = <String>{};
+    for (final row in rows) {
+      final id = row['id'] as int;
+      final original = row['name'].toString().trim();
+      var candidate = original;
+      var key = candidate.toLowerCase();
+      var suffix = 2;
+      while (used.contains(key)) {
+        candidate = '$original ($suffix)';
+        key = candidate.toLowerCase();
+        suffix++;
+      }
+      if (candidate != row['name'].toString()) {
+        await db.update('chemicals', {'name': candidate}, where: 'id = ?', whereArgs: [id]);
+      }
+      used.add(key);
+    }
+    await db.execute('''
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_chemicals_name_ci
+      ON chemicals(name COLLATE NOCASE)
+    ''');
+  }
+
+  Future<void> _createNewTables(Database db) async {
     await db.execute('''
       CREATE TABLE IF NOT EXISTS plots (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,6 +190,7 @@ class AppDb {
         created_at TEXT NOT NULL
       )
     ''');
+
     await db.execute('''
       CREATE TABLE IF NOT EXISTS sprays (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -90,9 +199,11 @@ class AppDb {
         water REAL NOT NULL,
         total_cost REAL NOT NULL,
         notes TEXT NOT NULL DEFAULT '',
-        created_at TEXT NOT NULL
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (plot_id) REFERENCES plots(id)
       )
     ''');
+
     await db.execute('''
       CREATE TABLE IF NOT EXISTS spray_chemicals (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -101,20 +212,36 @@ class AppDb {
         chemical_name TEXT NOT NULL,
         dosage REAL NOT NULL,
         price_per_unit REAL NOT NULL,
-        cost REAL NOT NULL
+        cost REAL NOT NULL,
+        FOREIGN KEY (spray_id) REFERENCES sprays(id)
       )
     ''');
+
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_sprays_plot_id
+      ON sprays(plot_id)
+    ''');
+
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_spray_chemicals_spray_id
+      ON spray_chemicals(spray_id)
+    ''');
+  }
+
+  Future<void> _createDripTables(Database db) async {
     await db.execute('''
       CREATE TABLE IF NOT EXISTS drip_applications (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         plot_id INTEGER NOT NULL,
-        application_date TEXT NOT NULL,
+        drip_date TEXT NOT NULL,
         acres REAL NOT NULL,
         total_cost REAL NOT NULL,
         notes TEXT NOT NULL DEFAULT '',
-        created_at TEXT NOT NULL
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (plot_id) REFERENCES plots(id)
       )
     ''');
+
     await db.execute('''
       CREATE TABLE IF NOT EXISTS drip_chemicals (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,335 +251,480 @@ class AppDb {
         dosage REAL NOT NULL,
         dosage_unit TEXT NOT NULL,
         price_per_unit REAL NOT NULL,
-        cost REAL NOT NULL
+        cost REAL NOT NULL,
+        FOREIGN KEY (drip_id) REFERENCES drip_applications(id)
       )
     ''');
-    await db.execute(
-      'CREATE INDEX IF NOT EXISTS idx_sprays_plot ON sprays(plot_id)',
-    );
-    await db.execute(
-      'CREATE INDEX IF NOT EXISTS idx_spray_chemicals ON spray_chemicals(spray_id)',
-    );
-    await db.execute(
-      'CREATE INDEX IF NOT EXISTS idx_drip_applications_plot ON drip_applications(plot_id)',
-    );
-    await db.execute(
-      'CREATE INDEX IF NOT EXISTS idx_drip_chemicals ON drip_chemicals(drip_id)',
-    );
+
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_drip_applications_plot_id
+      ON drip_applications(plot_id)
+    ''');
+
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_drip_chemicals_drip_id
+      ON drip_chemicals(drip_id)
+    ''');
   }
 
-  Future<List<Map<String, dynamic>>> chemicals() async =>
-      (await db).query('chemicals', orderBy: 'name COLLATE NOCASE');
+  // ------------------------------------------------------------
+  // CHEMICALS
+  // ------------------------------------------------------------
 
-  Future<void> addChemical(String name, double price) async {
-    await (await db).insert('chemicals', {'name': name.trim(), 'price': price});
-  }
+  Future<List<Map<String, dynamic>>> getChemicals() async {
+    final db = await database;
 
-  Future<void> editChemical(int id, String name, double price) async {
-    await (await db).update(
+    return db.query(
       'chemicals',
-      {'name': name.trim(), 'price': price},
-      where: 'id=?',
+      orderBy: 'name COLLATE NOCASE ASC',
+    );
+  }
+
+  Future<bool> chemicalNameExists(String name, {int? excludeId}) async {
+    final db = await database;
+    final clean = name.trim();
+    final rows = await db.query(
+      'chemicals',
+      columns: ['id'],
+      where: excludeId == null
+          ? 'name COLLATE NOCASE = ?'
+          : 'name COLLATE NOCASE = ? AND id != ?',
+      whereArgs: excludeId == null ? [clean] : [clean, excludeId],
+      limit: 1,
+    );
+    return rows.isNotEmpty;
+  }
+
+  Future<void> addChemical({
+    required String name,
+    required double price,
+  }) async {
+    final db = await database;
+    final clean = name.trim();
+    if (await chemicalNameExists(clean)) {
+      throw StateError('Chemical already exists.');
+    }
+    await db.insert('chemicals', {
+      'name': clean,
+      'price': price,
+    });
+  }
+
+  Future<void> updateChemical({
+    required int id,
+    required String name,
+    required double price,
+  }) async {
+    final db = await database;
+    final clean = name.trim();
+    if (await chemicalNameExists(clean, excludeId: id)) {
+      throw StateError('Chemical already exists.');
+    }
+    await db.update(
+      'chemicals',
+      {
+        'name': clean,
+        'price': price,
+      },
+      where: 'id = ?',
       whereArgs: [id],
     );
   }
 
   Future<void> deleteChemical(int id) async {
-    await (await db).delete('chemicals', where: 'id=?', whereArgs: [id]);
+    final db = await database;
+
+    // We intentionally do not delete old spray_chemicals records.
+    // Historical sprays contain their own chemical name and price snapshot.
+    await db.delete(
+      'chemicals',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
   }
 
-  Future<List<Map<String, dynamic>>> plots() async =>
-      (await db).query('plots', orderBy: 'id DESC');
+  // ------------------------------------------------------------
+  // PLOTS
+  // ------------------------------------------------------------
 
-  Future<void> addPlot(String title, String plot, String crop) async {
-    await (await db).insert('plots', {
+  Future<List<Map<String, dynamic>>> getPlots() async {
+    final db = await database;
+
+    return db.query(
+      'plots',
+      orderBy: 'id DESC',
+    );
+  }
+
+  Future<int> addPlot({
+    required String title,
+    required String plotName,
+    required String cropVariety,
+  }) async {
+    final db = await database;
+
+    return db.insert('plots', {
       'title': title.trim(),
-      'plot_name': plot.trim(),
-      'crop_variety': crop.trim(),
+      'plot_name': plotName.trim(),
+      'crop_variety': cropVariety.trim(),
       'created_at': DateTime.now().toIso8601String(),
     });
   }
 
-  Future<void> editPlot(
-    int id,
-    String title,
-    String plot,
-    String crop,
-  ) async {
-    await (await db).update(
+  Future<void> updatePlot({
+    required int id,
+    required String title,
+    required String plotName,
+    required String cropVariety,
+  }) async {
+    final db = await database;
+
+    await db.update(
       'plots',
       {
         'title': title.trim(),
-        'plot_name': plot.trim(),
-        'crop_variety': crop.trim(),
+        'plot_name': plotName.trim(),
+        'crop_variety': cropVariety.trim(),
       },
-      where: 'id=?',
+      where: 'id = ?',
       whereArgs: [id],
     );
   }
 
   Future<void> deletePlot(int id) async {
-    final database = await db;
-    await database.transaction((tx) async {
-      final rows = await tx.query(
+    final db = await database;
+
+    await db.transaction((txn) async {
+      final sprays = await txn.query(
         'sprays',
         columns: ['id'],
-        where: 'plot_id=?',
+        where: 'plot_id = ?',
         whereArgs: [id],
       );
-      for (final r in rows) {
-        await tx.delete(
+
+      for (final spray in sprays) {
+        final sprayId = spray['id'] as int;
+
+        await txn.delete(
           'spray_chemicals',
-          where: 'spray_id=?',
-          whereArgs: [r['id']],
+          where: 'spray_id = ?',
+          whereArgs: [sprayId],
         );
       }
-      await tx.delete('sprays', where: 'plot_id=?', whereArgs: [id]);
-      final dripRows = await tx.query(
-        'drip_applications',
-        columns: ['id'],
-        where: 'plot_id=?',
+
+      await txn.delete(
+        'sprays',
+        where: 'plot_id = ?',
         whereArgs: [id],
       );
-      for (final r in dripRows) {
-        await tx.delete(
-          'drip_chemicals',
-          where: 'drip_id=?',
-          whereArgs: [r['id']],
-        );
-      }
-      await tx.delete('drip_applications', where: 'plot_id=?', whereArgs: [id]);
-      await tx.delete('plots', where: 'id=?', whereArgs: [id]);
+
+      await txn.delete(
+        'plots',
+        where: 'id = ?',
+        whereArgs: [id],
+      );
     });
   }
 
-  Future<List<Map<String, dynamic>>> sprays(int plotId) async =>
-      (await db).query(
-        'sprays',
-        where: 'plot_id=?',
-        whereArgs: [plotId],
-        orderBy: 'spray_date DESC, id DESC',
-      );
+  // ------------------------------------------------------------
+  // SPRAYS
+  // ------------------------------------------------------------
 
-  Future<List<Map<String, dynamic>>> sprayChemicals(int sprayId) async =>
-      (await db).query(
+  Future<List<Map<String, dynamic>>> getSpraysForPlot(int plotId) async {
+    final db = await database;
+    final rawSprays = await db.query(
+      'sprays',
+      where: 'plot_id = ?',
+      whereArgs: [plotId],
+      orderBy: 'spray_date DESC, id DESC',
+    );
+
+    final sprays = <Map<String, dynamic>>[];
+
+    for (final row in rawSprays) {
+      // db.query() rows can be read-only in newer sqflite versions,
+      // so copy into a mutable map before adding computed fields.
+      final spray = Map<String, dynamic>.from(row);
+
+      final sprayId = spray['id'] as int;
+      final water = (spray['water'] as num).toDouble();
+      final chemicals = await db.query(
         'spray_chemicals',
-        where: 'spray_id=?',
+        where: 'spray_id = ?',
         whereArgs: [sprayId],
-        orderBy: 'id',
+      );
+      spray['total_cost'] = chemicals.fold<double>(
+        0,
+        (sum, c) => sum + water * (c['dosage'] as num).toDouble() *
+            (c['price_per_unit'] as num).toDouble(),
       );
 
-  Future<int> saveSpray({
-    int? id,
+      sprays.add(spray);
+    }
+
+    return sprays;
+  }
+
+  Future<List<Map<String, dynamic>>> getSprayChemicals(
+    int sprayId,
+  ) async {
+    final db = await database;
+
+    return db.query(
+      'spray_chemicals',
+      where: 'spray_id = ?',
+      whereArgs: [sprayId],
+      orderBy: 'id ASC',
+    );
+  }
+
+  Future<int> addSpray({
     required int plotId,
     required DateTime date,
     required double water,
     required double totalCost,
     required String notes,
-    required List<ChosenChemical> chemicals,
+    required List<SelectedChemical> chemicals,
   }) async {
-    final database = await db;
-    return database.transaction((tx) async {
-      if (id != null) {
-        await tx.update(
-          'sprays',
-          {
-            'plot_id': plotId,
-            'spray_date': date.toIso8601String(),
-            'water': water,
-            'total_cost': totalCost,
-            'notes': notes.trim(),
-          },
-          where: 'id=?',
-          whereArgs: [id],
-        );
-        await tx.delete(
-          'spray_chemicals',
-          where: 'spray_id=?',
-          whereArgs: [id],
-        );
-      } else {
-        id = await tx.insert('sprays', {
+    final db = await database;
+
+    return db.transaction((txn) async {
+      final sprayId = await txn.insert('sprays', {
+        'plot_id': plotId,
+        'spray_date': date.toIso8601String(),
+        'water': water,
+        'total_cost': totalCost,
+        'notes': notes.trim(),
+        'created_at': DateTime.now().toIso8601String(),
+      });
+
+      for (final chemical in chemicals) {
+        final dosage = chemical.dosage;
+        final price = chemical.price;
+
+        await txn.insert('spray_chemicals', {
+          'spray_id': sprayId,
+          'chemical_id': chemical.id,
+          'chemical_name': chemical.name,
+          'dosage': dosage,
+          'price_per_unit': price,
+          'cost': water * dosage * price,
+        });
+      }
+
+      return sprayId;
+    });
+  }
+
+  Future<void> updateSpray({
+    required int sprayId,
+    required int plotId,
+    required DateTime date,
+    required double water,
+    required double totalCost,
+    required String notes,
+    required List<SelectedChemical> chemicals,
+  }) async {
+    final db = await database;
+
+    await db.transaction((txn) async {
+      await txn.update(
+        'sprays',
+        {
           'plot_id': plotId,
           'spray_date': date.toIso8601String(),
           'water': water,
           'total_cost': totalCost,
           'notes': notes.trim(),
-          'created_at': DateTime.now().toIso8601String(),
+        },
+        where: 'id = ?',
+        whereArgs: [sprayId],
+      );
+
+      await txn.delete(
+        'spray_chemicals',
+        where: 'spray_id = ?',
+        whereArgs: [sprayId],
+      );
+
+      for (final chemical in chemicals) {
+        await txn.insert('spray_chemicals', {
+          'spray_id': sprayId,
+          'chemical_id': chemical.id,
+          'chemical_name': chemical.name,
+          'dosage': chemical.dosage,
+          'price_per_unit': chemical.price,
+          'cost': water * chemical.dosage * chemical.price,
         });
       }
-      for (final c in chemicals) {
-        await tx.insert('spray_chemicals', {
-          'spray_id': id,
-          'chemical_id': c.id,
-          'chemical_name': c.name,
-          'dosage': c.dosage,
-          'price_per_unit': c.price,
-          'cost': water * c.dosage * c.price,
-        });
-      }
-      return id!;
     });
   }
 
-  Future<List<Map<String, dynamic>>> drips(int plotId) async =>
-      (await db).query(
-        'drip_applications',
-        where: 'plot_id=?',
-        whereArgs: [plotId],
-        orderBy: 'application_date DESC, id DESC',
+  Future<void> deleteSpray(int sprayId) async {
+    final db = await database;
+
+    await db.transaction((txn) async {
+      await txn.delete(
+        'spray_chemicals',
+        where: 'spray_id = ?',
+        whereArgs: [sprayId],
       );
 
-  Future<List<Map<String, dynamic>>> dripChemicals(int dripId) async =>
-      (await db).query(
+      await txn.delete(
+        'sprays',
+        where: 'id = ?',
+        whereArgs: [sprayId],
+      );
+    });
+  }
+
+  // ------------------------------------------------------------
+  // DRIP APPLICATIONS
+  // ------------------------------------------------------------
+
+  Future<List<Map<String, dynamic>>> getDripApplicationsForPlot(int plotId) async {
+    final db = await database;
+    final rows = await db.query(
+      'drip_applications',
+      where: 'plot_id = ?',
+      whereArgs: [plotId],
+      orderBy: 'drip_date DESC, id DESC',
+    );
+
+    final applications = <Map<String, dynamic>>[];
+    for (final row in rows) {
+      final item = Map<String, dynamic>.from(row);
+      final chemicals = await db.query(
         'drip_chemicals',
-        where: 'drip_id=?',
-        whereArgs: [dripId],
-        orderBy: 'id',
+        where: 'drip_id = ?',
+        whereArgs: [item['id']],
       );
+      item['total_cost'] = chemicals.fold<double>(
+        0,
+        (sum, c) => sum + (c['cost'] as num).toDouble(),
+      );
+      applications.add(item);
+    }
+    return applications;
+  }
 
-  Future<int> saveDrip({
-    int? id,
+  Future<List<Map<String, dynamic>>> getDripChemicals(int dripId) async {
+    final db = await database;
+    return db.query(
+      'drip_chemicals',
+      where: 'drip_id = ?',
+      whereArgs: [dripId],
+      orderBy: 'id ASC',
+    );
+  }
+
+  Future<int> addDripApplication({
     required int plotId,
     required DateTime date,
     required double acres,
     required double totalCost,
     required String notes,
-    required List<ChosenDripChemical> chemicals,
+    required List<SelectedDripChemical> chemicals,
   }) async {
-    final database = await db;
-    return database.transaction((tx) async {
-      if (id != null) {
-        await tx.update(
-          'drip_applications',
-          {
-            'plot_id': plotId,
-            'application_date': date.toIso8601String(),
-            'acres': acres,
-            'total_cost': totalCost,
-            'notes': notes.trim(),
-          },
-          where: 'id=?',
-          whereArgs: [id],
-        );
-        await tx.delete(
-          'drip_chemicals',
-          where: 'drip_id=?',
-          whereArgs: [id],
-        );
-      } else {
-        id = await tx.insert('drip_applications', {
+    final db = await database;
+    return db.transaction((txn) async {
+      final dripId = await txn.insert('drip_applications', {
+        'plot_id': plotId,
+        'drip_date': date.toIso8601String(),
+        'acres': acres,
+        'total_cost': totalCost,
+        'notes': notes.trim(),
+        'created_at': DateTime.now().toIso8601String(),
+      });
+
+      for (final chemical in chemicals) {
+        final multiplier = chemical.dosageUnit == 'L/acre' ? 1000.0 : 1000.0;
+        final cost = acres * chemical.dosage * multiplier * chemical.price;
+        await txn.insert('drip_chemicals', {
+          'drip_id': dripId,
+          'chemical_id': chemical.id,
+          'chemical_name': chemical.name,
+          'dosage': chemical.dosage,
+          'dosage_unit': chemical.dosageUnit,
+          'price_per_unit': chemical.price,
+          'cost': cost,
+        });
+      }
+      return dripId;
+    });
+  }
+
+  Future<void> updateDripApplication({
+    required int dripId,
+    required int plotId,
+    required DateTime date,
+    required double acres,
+    required double totalCost,
+    required String notes,
+    required List<SelectedDripChemical> chemicals,
+  }) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      await txn.update(
+        'drip_applications',
+        {
           'plot_id': plotId,
-          'application_date': date.toIso8601String(),
+          'drip_date': date.toIso8601String(),
           'acres': acres,
           'total_cost': totalCost,
           'notes': notes.trim(),
-          'created_at': DateTime.now().toIso8601String(),
+        },
+        where: 'id = ?',
+        whereArgs: [dripId],
+      );
+
+      await txn.delete(
+        'drip_chemicals',
+        where: 'drip_id = ?',
+        whereArgs: [dripId],
+      );
+
+      for (final chemical in chemicals) {
+        final multiplier = chemical.dosageUnit == 'L/acre' ? 1000.0 : 1000.0;
+        final cost = acres * chemical.dosage * multiplier * chemical.price;
+        await txn.insert('drip_chemicals', {
+          'drip_id': dripId,
+          'chemical_id': chemical.id,
+          'chemical_name': chemical.name,
+          'dosage': chemical.dosage,
+          'dosage_unit': chemical.dosageUnit,
+          'price_per_unit': chemical.price,
+          'cost': cost,
         });
       }
-
-      for (final c in chemicals) {
-        await tx.insert('drip_chemicals', {
-          'drip_id': id,
-          'chemical_id': c.id,
-          'chemical_name': c.name,
-          'dosage': c.dosage,
-          'dosage_unit': c.unit,
-          'price_per_unit': c.price,
-          'cost': c.costForAcres(acres),
-        });
-      }
-      return id!;
     });
   }
 
-  Future<void> deleteDrip(int id) async {
-    final database = await db;
-    await database.transaction((tx) async {
-      await tx.delete('drip_chemicals', where: 'drip_id=?', whereArgs: [id]);
-      await tx.delete('drip_applications', where: 'id=?', whereArgs: [id]);
-    });
-  }
-
-  Future<void> deleteSpray(int id) async {
-    final database = await db;
-    await database.transaction((tx) async {
-      await tx.delete('spray_chemicals', where: 'spray_id=?', whereArgs: [id]);
-      await tx.delete('sprays', where: 'id=?', whereArgs: [id]);
-    });
-  }
-  Future<Map<String, dynamic>> exportAllData() async {
-    final database = await db;
-    return {
-      'format': 'spraybook_backup',
-      'version': 1,
-      'exported_at': DateTime.now().toIso8601String(),
-      'chemicals': await database.query('chemicals'),
-      'plots': await database.query('plots'),
-      'sprays': await database.query('sprays'),
-      'spray_chemicals': await database.query('spray_chemicals'),
-      'drip_applications': await database.query('drip_applications'),
-      'drip_chemicals': await database.query('drip_chemicals'),
-    };
-  }
-
-  Future<void> restoreAllData(Map<String, dynamic> data) async {
-    if (data['format'] != 'spraybook_backup') {
-      throw const FormatException('Not a SprayBook backup.');
-    }
-
-    final database = await db;
-
-    List<Map<String, dynamic>> maps(String key) {
-      final value = data[key];
-      if (value is! List) return [];
-      return value
-          .whereType<Map>()
-          .map((e) => Map<String, dynamic>.from(e))
-          .toList();
-    }
-
-    final chemicalsRows = maps('chemicals');
-    final plotsRows = maps('plots');
-    final spraysRows = maps('sprays');
-    final sprayChemRows = maps('spray_chemicals');
-    final dripRows = maps('drip_applications');
-    final dripChemRows = maps('drip_chemicals');
-
-    await database.transaction((tx) async {
-      await tx.delete('drip_chemicals');
-      await tx.delete('drip_applications');
-      await tx.delete('spray_chemicals');
-      await tx.delete('sprays');
-      await tx.delete('plots');
-      await tx.delete('chemicals');
-
-      for (final row in chemicalsRows) {
-        await tx.insert('chemicals', row);
-      }
-      for (final row in plotsRows) {
-        await tx.insert('plots', row);
-      }
-      for (final row in spraysRows) {
-        await tx.insert('sprays', row);
-      }
-      for (final row in sprayChemRows) {
-        await tx.insert('spray_chemicals', row);
-      }
-      for (final row in dripRows) {
-        await tx.insert('drip_applications', row);
-      }
-      for (final row in dripChemRows) {
-        await tx.insert('drip_chemicals', row);
-      }
+  Future<void> deleteDripApplication(int dripId) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      await txn.delete(
+        'drip_chemicals',
+        where: 'drip_id = ?',
+        whereArgs: [dripId],
+      );
+      await txn.delete(
+        'drip_applications',
+        where: 'id = ?',
+        whereArgs: [dripId],
+      );
     });
   }
 
 
 }
 
-class ChosenChemical {
-  ChosenChemical({
+// ============================================================
+// MODELS
+// ============================================================
+
+class SelectedChemical {
+  SelectedChemical({
     required this.id,
     required this.name,
     required this.price,
@@ -464,35 +736,29 @@ class ChosenChemical {
   final double price;
   double dosage;
 
-  double costForWater(double water) => water * dosage * price;
+  double get cost => dosage * price;
 }
 
-class ChosenDripChemical {
-  ChosenDripChemical({
+
+class SelectedDripChemical {
+  SelectedDripChemical({
     required this.id,
     required this.name,
     required this.price,
     this.dosage = 0,
-    this.unit = 'L',
+    this.dosageUnit = 'L/acre',
   });
 
   final int id;
   final String name;
   final double price;
   double dosage;
-  String unit;
-
-  double get multiplier => 1000.0;
-  double costForAcres(double acres) => acres * dosage * multiplier * price;
+  String dosageUnit;
 }
 
-String money(double v) => v.toStringAsFixed(2);
-
-String numText(double v) =>
-    v == v.roundToDouble() ? v.toInt().toString() : v.toStringAsFixed(2);
-
-String dateText(DateTime d) =>
-    '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year}';
+// ============================================================
+// HOME
+// ============================================================
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -502,31 +768,29 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  int index = 0;
+  int _currentIndex = 0;
 
-  final pages = const [
-    DashboardPage(),
-    HistoryPage(),
+  final List<Widget> _pages = const [
+    PlotHistoryPage(),
     ChemicalsPage(),
   ];
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: pages[index],
+      body: _pages[_currentIndex],
       bottomNavigationBar: NavigationBar(
-        selectedIndex: index,
-        onDestinationSelected: (v) => setState(() => index = v),
+        selectedIndex: _currentIndex,
+        onDestinationSelected: (index) {
+          setState(() {
+            _currentIndex = index;
+          });
+        },
         destinations: const [
           NavigationDestination(
             icon: Icon(Icons.home_outlined),
             selectedIcon: Icon(Icons.home),
             label: 'Home',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.history_outlined),
-            selectedIcon: Icon(Icons.history),
-            label: 'History',
           ),
           NavigationDestination(
             icon: Icon(Icons.science_outlined),
@@ -539,167 +803,9 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
-
-class BackupPage extends StatefulWidget {
-  const BackupPage({super.key});
-
-  @override
-  State<BackupPage> createState() => _BackupPageState();
-}
-
-class _BackupPageState extends State<BackupPage> {
-  bool working = false;
-
-  Future<void> exportBackup() async {
-    if (working) return;
-    setState(() => working = true);
-    try {
-      final data = await AppDb.instance.exportAllData();
-      final jsonText = const JsonEncoder.withIndent('  ').convert(data);
-
-      await SharePlus.instance.share(
-        ShareParams(
-          text: 'SprayBook full backup',
-          files: [
-            XFile.fromData(
-              utf8.encode(jsonText),
-              mimeType: 'application/json',
-            ),
-          ],
-          fileNameOverrides: [
-            'spraybook_backup_${DateTime.now().millisecondsSinceEpoch}.json',
-          ],
-        ),
-      );
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Backup failed: $e')),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => working = false);
-    }
-  }
-
-  Future<void> restoreBackup() async {
-    if (working) return;
-
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Restore backup?'),
-        content: const Text(
-          'Restore replaces the current SprayBook data on this phone with the backup data. '
-          'Make a backup of the current phone first if it contains anything important.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Restore'),
-          ),
-        ],
-      ),
-    );
-
-    if (confirm != true) return;
-
-    final file = await FilePicker.pickFile(
-      type: FileType.custom,
-      allowedExtensions: ['json'],
-    );
-    if (file == null) return;
-
-    setState(() => working = true);
-    try {
-      final decoded = jsonDecode(
-        utf8.decode(await file.readAsBytes()),
-      );
-      if (decoded is! Map || decoded['format'] != 'spraybook_backup') {
-        throw const FormatException('Not a SprayBook backup.');
-      }
-
-      await AppDb.instance.restoreAllData(
-        Map<String, dynamic>.from(decoded),
-      );
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Backup restored successfully.')),
-      );
-    } catch (_) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Invalid or damaged SprayBook backup.')),
-      );
-    } finally {
-      if (mounted) setState(() => working = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Backup & Restore')),
-      body: ListView(
-        padding: const EdgeInsets.all(20),
-        children: [
-          const Icon(
-            Icons.backup,
-            size: 76,
-            color: Color(0xFF0D47A1),
-          ),
-          const SizedBox(height: 16),
-          const Text(
-            'Keep your SprayBook data safe',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 23,
-              fontWeight: FontWeight.bold,
-              color: Color(0xFF0D47A1),
-            ),
-          ),
-          const SizedBox(height: 10),
-          const Text(
-            'Backup includes chemicals, prices, plots, spray records and drip records. '
-            'The backup is an offline file that you can keep or send to your new phone.',
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 28),
-          FilledButton.icon(
-            onPressed: working ? null : exportBackup,
-            icon: const Icon(Icons.upload_file),
-            label: const Text('Export full backup'),
-          ),
-          const SizedBox(height: 12),
-          OutlinedButton.icon(
-            onPressed: working ? null : restoreBackup,
-            icon: const Icon(Icons.download),
-            label: const Text('Restore from backup'),
-          ),
-          if (working) ...[
-            const SizedBox(height: 20),
-            const Center(child: CircularProgressIndicator()),
-          ],
-          const SizedBox(height: 28),
-          const Card(
-            child: Padding(
-              padding: EdgeInsets.all(16),
-              child: Text(
-                'Tip: After exporting, save the backup file somewhere safe. '
-                'For a new phone, install SprayBook first and then restore the backup file.',
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
+// ============================================================
+// DASHBOARD
+// ============================================================
 
 class DashboardPage extends StatelessWidget {
   const DashboardPage({super.key});
@@ -707,11 +813,17 @@ class DashboardPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('SprayBook')),
+      appBar: AppBar(
+        title: const Text('SprayBook'),
+      ),
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [
-          const Icon(Icons.agriculture, size: 82, color: Color(0xFF0D47A1)),
+          const Icon(
+            Icons.agriculture,
+            size: 80,
+            color: Color(0xFF0D47A1),
+          ),
           const SizedBox(height: 12),
           const Text(
             'SprayBook',
@@ -724,45 +836,39 @@ class DashboardPage extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           const Text(
-            'Offline spray and drip records, chemical prices and cost calculation.',
+            'Spray records, chemical prices and costs stored locally on your phone.',
             textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 15),
           ),
           const SizedBox(height: 30),
-          Card(
-            child: ListTile(
-              leading: const Icon(Icons.history, color: Color(0xFF0D47A1)),
-              title: const Text('Spray & Drip History'),
-              subtitle: const Text('Manage plots, crops and spray records.'),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const HistoryPage()),
-              ),
-            ),
+          _DashboardCard(
+            icon: Icons.history,
+            title: 'Spray History',
+            subtitle: 'Manage plots, crops and spray records.',
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => const PlotHistoryPage(
+                    standalone: true,
+                  ),
+                ),
+              );
+            },
           ),
-          Card(
-            child: ListTile(
-              leading: const Icon(Icons.science, color: Color(0xFF0D47A1)),
-              title: const Text('Chemical Database'),
-              subtitle: const Text('Add, edit or delete chemicals and prices.'),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const ChemicalsPage()),
-              ),
-            ),
-          ),
-          Card(
-            child: ListTile(
-              leading: const Icon(Icons.backup, color: Color(0xFF0D47A1)),
-              title: const Text('Backup & Restore'),
-              subtitle: const Text('Move or protect all SprayBook data.'),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const BackupPage()),
-              ),
-            ),
+          const SizedBox(height: 14),
+          _DashboardCard(
+            icon: Icons.science,
+            title: 'Chemical Database',
+            subtitle: 'Add, edit or delete chemicals and prices.',
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => const ChemicalsPage(
+                    standalone: true,
+                  ),
+                ),
+              );
+            },
           ),
         ],
       ),
@@ -770,204 +876,377 @@ class DashboardPage extends StatelessWidget {
   }
 }
 
+class _DashboardCard extends StatelessWidget {
+  const _DashboardCard({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      elevation: 2,
+      child: ListTile(
+        contentPadding: const EdgeInsets.all(16),
+        leading: CircleAvatar(
+          backgroundColor: const Color(0xFFE3F2FD),
+          child: Icon(
+            icon,
+            color: const Color(0xFF0D47A1),
+          ),
+        ),
+        title: Text(
+          title,
+          style: const TextStyle(
+            fontWeight: FontWeight.bold,
+            color: Color(0xFF0D47A1),
+          ),
+        ),
+        subtitle: Padding(
+          padding: const EdgeInsets.only(top: 5),
+          child: Text(subtitle),
+        ),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: onTap,
+      ),
+    );
+  }
+}
+
+
+// ============================================================
+// CHEMICALS PAGE
+// ============================================================
+
 class ChemicalsPage extends StatefulWidget {
-  const ChemicalsPage({super.key});
+  const ChemicalsPage({
+    super.key,
+    this.standalone = false,
+  });
+
+  final bool standalone;
 
   @override
   State<ChemicalsPage> createState() => _ChemicalsPageState();
 }
 
 class _ChemicalsPageState extends State<ChemicalsPage> {
-  List<Map<String, dynamic>> data = [];
-  bool loading = true;
+  List<Map<String, dynamic>> _chemicals = [];
+  bool _loading = true;
 
   @override
   void initState() {
     super.initState();
-    load();
+    _loadChemicals();
   }
 
-  Future<void> load() async {
-    final rows = await AppDb.instance.chemicals();
-    if (!mounted) return;
-    setState(() {
-      data = rows;
-      loading = false;
-    });
+  Future<void> _loadChemicals() async {
+    try {
+      final chemicals = await AppDatabase.instance.getChemicals();
+      if (!mounted) return;
+      setState(() {
+        _chemicals = chemicals;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _loading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not load chemicals: $e')),
+      );
+    }
   }
 
-  Future<void> editDialog([Map<String, dynamic>? row]) async {
-    final name = TextEditingController(text: row?['name']?.toString() ?? '');
-    final price = TextEditingController(
-      text: row == null ? '' : numText((row['price'] as num).toDouble()),
+  Future<void> _showChemicalDialog({
+    Map<String, dynamic>? chemical,
+  }) async {
+    final nameController = TextEditingController(
+      text: chemical == null ? '' : chemical['name'].toString(),
     );
+    final priceController = TextEditingController(
+      text: chemical == null
+          ? ''
+          : _formatNumber((chemical['price'] as num).toDouble()),
+    );
+    final isEditing = chemical != null;
 
-    await showDialog(
+    await showDialog<void>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text(row == null ? 'Add chemical' : 'Edit chemical'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: name,
-              decoration: const InputDecoration(labelText: 'Chemical name'),
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: Text(isEditing ? 'Edit chemical' : 'Add chemical'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: nameController,
+                  textCapitalization: TextCapitalization.words,
+                  decoration: const InputDecoration(
+                    labelText: 'Chemical name',
+                    prefixIcon: Icon(Icons.science),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                TextField(
+                  controller: priceController,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  decoration: const InputDecoration(
+                    labelText: 'Price per unit (₹)',
+                    hintText: 'Example: 0.65 per ml',
+                    prefixIcon: Icon(Icons.currency_rupee),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'Keep the price unit consistent with the dosage unit you use.',
+                    style: TextStyle(color: Colors.grey, fontSize: 12),
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: price,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: const InputDecoration(labelText: 'Price per unit (₹)'),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                final name = nameController.text.trim();
+                final price = double.tryParse(priceController.text.trim());
+
+                if (name.isEmpty || price == null || price < 0) {
+                  ScaffoldMessenger.of(dialogContext).showSnackBar(
+                    const SnackBar(
+                      content: Text('Enter a valid chemical name and price.'),
+                    ),
+                  );
+                  return;
+                }
+
+                final duplicate =
+                    await AppDatabase.instance.chemicalNameExists(
+                  name,
+                  excludeId: isEditing ? chemical['id'] as int : null,
+                );
+                if (duplicate) {
+                  ScaffoldMessenger.of(dialogContext).showSnackBar(
+                    const SnackBar(
+                      content: Text(
+                        'Chemical already exists. Use a different name.',
+                      ),
+                    ),
+                  );
+                  return;
+                }
+
+                try {
+                  if (isEditing) {
+                    await AppDatabase.instance.updateChemical(
+                      id: chemical['id'] as int,
+                      name: name,
+                      price: price,
+                    );
+                  } else {
+                    await AppDatabase.instance.addChemical(
+                      name: name,
+                      price: price,
+                    );
+                  }
+                } on StateError {
+                  ScaffoldMessenger.of(dialogContext).showSnackBar(
+                    const SnackBar(
+                      content: Text(
+                        'Chemical already exists. Use a different name.',
+                      ),
+                    ),
+                  );
+                  return;
+                }
+
+                if (!mounted) return;
+                Navigator.pop(dialogContext);
+                await _loadChemicals();
+              },
+              child: Text(isEditing ? 'Save' : 'Add'),
             ),
           ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () async {
-              final n = name.text.trim();
-              final pr = double.tryParse(price.text.trim());
-              if (n.isEmpty || pr == null || pr < 0) return;
-
-              if (row == null) {
-                await AppDb.instance.addChemical(n, pr);
-              } else {
-                await AppDb.instance.editChemical(row['id'] as int, n, pr);
-              }
-
-              if (!mounted) return;
-              Navigator.pop(dialogContext);
-              load();
-            },
-            child: const Text('Save'),
-          ),
-        ],
-      ),
-    );
-
-    name.dispose();
-    price.dispose();
-  }
-
-  Future<void> exportChemicals() async {
-    final rows = await AppDb.instance.chemicals();
-    if (rows.isEmpty) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No chemicals to export.')),
         );
-      }
-      return;
-    }
-
-    final data = {
-      'format': 'spraybook_chemicals',
-      'version': 1,
-      'chemicals': rows
-          .map((r) => {
-                'name': r['name'].toString(),
-                'price': (r['price'] as num).toDouble(),
-              })
-          .toList(),
-    };
-
-    final jsonText = const JsonEncoder.withIndent('  ').convert(data);
-
-    await SharePlus.instance.share(
-      ShareParams(
-        text: 'SprayBook chemical list',
-        files: [
-          XFile.fromData(
-            utf8.encode(jsonText),
-            mimeType: 'application/json',
-          ),
-        ],
-        fileNameOverrides: [
-          'spraybook_chemicals_${DateTime.now().millisecondsSinceEpoch}.json',
-        ],
-      ),
+      },
     );
+
+    nameController.dispose();
+    priceController.dispose();
   }
 
-  Future<void> importChemicals() async {
-    final file = await FilePicker.pickFile(
-      type: FileType.custom,
-      allowedExtensions: ['json'],
+  Future<void> _deleteChemical(Map<String, dynamic> chemical) async {
+    final shouldDelete = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Delete chemical?'),
+          content: Text(
+            'Delete "${chemical['name']}" from the current chemical database?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Colors.red),
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Delete'),
+            ),
+          ],
+        );
+      },
     );
-    if (file == null) return;
 
+    if (shouldDelete != true) return;
+
+    await AppDatabase.instance.deleteChemical(chemical['id'] as int);
+    await _loadChemicals();
+  }
+
+  Future<void> _exportChemicals() async {
     try {
-      final bytes = await file.readAsBytes();
-      final decoded = jsonDecode(utf8.decode(bytes));
-      if (decoded is! Map || decoded['format'] != 'spraybook_chemicals') {
-        throw const FormatException('Not a SprayBook chemical file.');
+      final chemicals = await AppDatabase.instance.getChemicals();
+      final payload = {
+        'format': 'SprayBook chemical database',
+        'version': 1,
+        'exported_at': DateTime.now().toIso8601String(),
+        'chemicals': chemicals
+            .map(
+              (c) => {
+                'name': c['name'].toString(),
+                'price_per_unit': (c['price'] as num).toDouble(),
+                'unit': 'per unit',
+              },
+            )
+            .toList(),
+      };
+
+      final jsonText = const JsonEncoder.withIndent('  ').convert(payload);
+      final fileName =
+          'SprayBook_chemicals_${DateTime.now().millisecondsSinceEpoch}.json';
+
+      final path = await FilePicker.platform.saveFile(
+        dialogTitle: 'Export Chemical Database',
+        fileName: fileName,
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+
+      if (path == null) return;
+
+      await File(path).writeAsString(jsonText, flush: true);
+
+      if (!mounted) return;
+      await Share.shareXFiles(
+        [XFile(path)],
+        text: 'SprayBook chemical database',
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Chemical export failed: $e')),
+      );
+    }
+  }
+
+  Future<void> _importChemicals() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+        withData: false,
+      );
+
+      if (result == null || result.files.single.path == null) return;
+
+      final path = result.files.single.path!;
+      final text = await File(path).readAsString();
+      final decoded = jsonDecode(text);
+
+      if (decoded is! Map<String, dynamic>) {
+        throw const FormatException('Invalid SprayBook JSON file.');
       }
 
-      final list = decoded['chemicals'];
-      if (list is! List) throw const FormatException('Invalid chemical list.');
+      final rawChemicals = decoded['chemicals'];
+      if (rawChemicals is! List) {
+        throw const FormatException('No chemicals were found in the file.');
+      }
 
       int added = 0;
       int updated = 0;
-      for (final item in list) {
-        if (item is! Map) continue;
-        final name = item['name']?.toString().trim() ?? '';
-        final price = (item['price'] as num?)?.toDouble();
-        if (name.isEmpty || price == null || price < 0) continue;
+      int skipped = 0;
 
-        final existing = (await AppDb.instance.chemicals()).where(
-          (r) => r['name'].toString().trim().toLowerCase() == name.toLowerCase(),
+      for (final item in rawChemicals) {
+        if (item is! Map) {
+          skipped++;
+          continue;
+        }
+
+        final name = item['name']?.toString().trim() ?? '';
+        final priceValue = item['price_per_unit'] ?? item['price'];
+        final price = priceValue is num
+            ? priceValue.toDouble()
+            : double.tryParse(priceValue?.toString() ?? '');
+
+        if (name.isEmpty || price == null || price < 0) {
+          skipped++;
+          continue;
+        }
+
+        final existing = _chemicals.where(
+          (c) => c['name'].toString().trim().toLowerCase() == name.toLowerCase(),
         );
+
         if (existing.isEmpty) {
-          await AppDb.instance.addChemical(name, price);
+          await AppDatabase.instance.addChemical(
+            name: name,
+            price: price,
+          );
           added++;
         } else {
-          await AppDb.instance.editChemical(
-            existing.first['id'] as int,
-            name,
-            price,
+          await AppDatabase.instance.updateChemical(
+            id: existing.first['id'] as int,
+            name: existing.first['name'].toString(),
+            price: price,
           );
           updated++;
         }
       }
 
-      await load();
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Imported: $added added, $updated updated.')),
-      );
-    } catch (_) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Invalid SprayBook chemical file.')),
-      );
-    }
-  }
+      await _loadChemicals();
 
-  Future<void> remove(Map<String, dynamic> row) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Delete chemical?'),
-        content: Text('Delete "${row['name']}"?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Import complete: $added added, $updated updated'
+            '${skipped == 0 ? '' : ', $skipped skipped'}.',
           ),
-          FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Delete'),
-          ),
-        ],
-      ),
-    );
-    if (ok == true) {
-      await AppDb.instance.deleteChemical(row['id'] as int);
-      load();
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Chemical import failed: $e')),
+      );
     }
   }
 
@@ -978,533 +1257,587 @@ class _ChemicalsPageState extends State<ChemicalsPage> {
         title: const Text('Chemical Database'),
         actions: [
           PopupMenuButton<String>(
-            onSelected: (v) {
-              if (v == 'export') exportChemicals();
-              if (v == 'import') importChemicals();
+            tooltip: 'Import or export',
+            onSelected: (value) {
+              if (value == 'export') {
+                _exportChemicals();
+              } else if (value == 'import') {
+                _importChemicals();
+              }
             },
             itemBuilder: (_) => const [
               PopupMenuItem(
                 value: 'export',
-                child: Text('Export chemicals'),
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.upload_file),
+                  title: Text('Chemical Export'),
+                ),
               ),
               PopupMenuItem(
                 value: 'import',
-                child: Text('Import chemicals'),
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.download),
+                  title: Text('Chemical Import'),
+                ),
               ),
             ],
           ),
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: editDialog,
         backgroundColor: const Color(0xFF0D47A1),
         foregroundColor: Colors.white,
+        onPressed: () => _showChemicalDialog(),
         icon: const Icon(Icons.add),
         label: const Text('Add chemical'),
       ),
-      body: loading
+      body: _loading
           ? const Center(child: CircularProgressIndicator())
-          : data.isEmpty
-              ? const Center(child: Text('No chemicals saved yet.'))
-              : ListView.separated(
-                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 100),
-                  itemCount: data.length,
-                  separatorBuilder: (_, __) => const SizedBox(height: 6),
-                  itemBuilder: (_, i) {
-                    final r = data[i];
-                    final price = (r['price'] as num).toDouble();
-                    return Card(
-                      child: ListTile(
-                        leading: const CircleAvatar(
-                          child: Icon(Icons.science),
-                        ),
-                        title: Text(
-                          r['name'].toString(),
-                          style: const TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        subtitle: Text('₹${money(price)} per unit'),
-                        trailing: PopupMenuButton<String>(
-                          onSelected: (v) {
-                            if (v == 'edit') editDialog(r);
-                            if (v == 'delete') remove(r);
-                          },
-                          itemBuilder: (_) => const [
-                            PopupMenuItem(
-                              value: 'edit',
-                              child: Text('Edit'),
+          : _chemicals.isEmpty
+              ? const Center(
+                  child: Padding(
+                    padding: EdgeInsets.all(30),
+                    child: Text(
+                      'No chemicals saved yet.\n\nTap "Add chemical" to create your local chemical database.',
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                )
+              : RefreshIndicator(
+                  onRefresh: _loadChemicals,
+                  child: ListView.separated(
+                    padding: const EdgeInsets.fromLTRB(12, 12, 12, 100),
+                    itemCount: _chemicals.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 6),
+                    itemBuilder: (context, index) {
+                      final chemical = _chemicals[index];
+                      final name = chemical['name'].toString();
+                      final price = (chemical['price'] as num).toDouble();
+
+                      return Card(
+                        child: ListTile(
+                          leading: const CircleAvatar(
+                            backgroundColor: Color(0xFFE3F2FD),
+                            child: Icon(
+                              Icons.science,
+                              color: Color(0xFF0D47A1),
                             ),
-                            PopupMenuItem(
-                              value: 'delete',
-                              child: Text('Delete'),
-                            ),
-                          ],
+                          ),
+                          title: Text(
+                            name,
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          subtitle: Text(
+                            '₹${price.toStringAsFixed(2)} per unit',
+                          ),
+                          trailing: PopupMenuButton<String>(
+                            onSelected: (value) {
+                              if (value == 'edit') {
+                                _showChemicalDialog(chemical: chemical);
+                              } else if (value == 'delete') {
+                                _deleteChemical(chemical);
+                              }
+                            },
+                            itemBuilder: (_) => const [
+                              PopupMenuItem(
+                                value: 'edit',
+                                child: Text('Edit'),
+                              ),
+                              PopupMenuItem(
+                                value: 'delete',
+                                child: Text('Delete'),
+                              ),
+                            ],
+                          ),
                         ),
-                      ),
-                    );
-                  },
+                      );
+                    },
+                  ),
                 ),
     );
   }
 }
 
-class HistoryPage extends StatefulWidget {
-  const HistoryPage({super.key});
 
-  @override
-  State<HistoryPage> createState() => _HistoryPageState();
-}
+// ============================================================
+// PLOT HISTORY / SPRAY + DRIP PAGE
+// ============================================================
 
-class _HistoryPageState extends State<HistoryPage> {
-  List<Map<String, dynamic>> data = [];
-  bool loading = true;
-
-  @override
-  void initState() {
-    super.initState();
-    load();
-  }
-
-  Future<void> load() async {
-    final rows = await AppDb.instance.plots();
-    if (!mounted) return;
-    setState(() {
-      data = rows;
-      loading = false;
-    });
-  }
-
-  Future<void> plotDialog([Map<String, dynamic>? row]) async {
-    final title = TextEditingController(text: row?['title']?.toString() ?? '');
-    final plot = TextEditingController(
-      text: row?['plot_name']?.toString() ?? '',
-    );
-    final crop = TextEditingController(
-      text: row?['crop_variety']?.toString() ?? '',
-    );
-
-    await showDialog(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text(row == null ? 'Add plot / crop' : 'Edit plot / crop'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: title,
-                decoration: const InputDecoration(
-                  labelText: 'Title',
-                  hintText: 'Farm 1 - Cotton',
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: plot,
-                decoration: const InputDecoration(
-                  labelText: 'Plot name or number (optional)',
-                  hintText: 'Plot 2',
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: crop,
-                decoration: const InputDecoration(
-                  labelText: 'Crop variety (optional)',
-                  hintText: 'Cotton',
-                ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () async {
-              if (title.text.trim().isEmpty) {
-                ScaffoldMessenger.of(dialogContext).showSnackBar(
-                  const SnackBar(content: Text('Enter a title.')),
-                );
-                return;
-              }
-
-              if (row == null) {
-                await AppDb.instance.addPlot(
-                  title.text,
-                  plot.text,
-                  crop.text,
-                );
-              } else {
-                await AppDb.instance.editPlot(
-                  row['id'] as int,
-                  title.text,
-                  plot.text,
-                  crop.text,
-                );
-              }
-
-              if (!mounted) return;
-              Navigator.pop(dialogContext);
-              load();
-            },
-            child: const Text('Save'),
-          ),
-        ],
-      ),
-    );
-
-    title.dispose();
-    plot.dispose();
-    crop.dispose();
-  }
-
-  Future<void> remove(Map<String, dynamic> row) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Delete plot / crop?'),
-        content: const Text(
-          'All spray records inside this plot will also be deleted.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Delete'),
-          ),
-        ],
-      ),
-    );
-
-    if (ok == true) {
-      await AppDb.instance.deletePlot(row['id'] as int);
-      load();
-    }
-  }
-
-  void open(Map<String, dynamic> row) {
-    Navigator.push(
-      context,
-  class PlotPage extends StatefulWidget {
-  const PlotPage({
+class PlotSpraysPage extends StatefulWidget {
+  const PlotSpraysPage({
     super.key,
     required this.plotId,
-    required this.title,
-    required this.plot,
-    required this.crop,
+    required this.plotTitle,
+    required this.plotName,
+    required this.cropVariety,
   });
 
   final int plotId;
-  final String title;
-  final String plot;
-  final String crop;
+  final String plotTitle;
+  final String plotName;
+  final String cropVariety;
 
   @override
-  State<PlotPage> createState() => _PlotPageState();
+  State<PlotSpraysPage> createState() => _PlotSpraysPageState();
 }
 
-class _PlotPageState extends State<PlotPage> {
-  List<Map<String, dynamic>> sprays = [];
-  List<Map<String, dynamic>> drips = [];
-  bool loading = true;
+class _PlotSpraysPageState extends State<PlotSpraysPage> {
+  List<Map<String, dynamic>> _records = [];
+  bool _loading = true;
+  String? _loadError;
 
   @override
   void initState() {
     super.initState();
-    load();
+    _loadRecords();
   }
 
-  Future<void> load() async {
-    final s = await AppDb.instance.sprays(widget.plotId);
-    final d = await AppDb.instance.drips(widget.plotId);
-    if (!mounted) return;
-    setState(() {
-      sprays = s;
-      drips = d;
-      loading = false;
-    });
-  }
+  Future<void> _loadRecords() async {
+    if (mounted) {
+      setState(() {
+        _loading = true;
+        _loadError = null;
+      });
+    }
 
-  void editSpray(Map<String, dynamic> row) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => SprayFormPage(
-          plotId: widget.plotId,
-          plotTitle: widget.title,
-          spray: row,
-        ),
-      ),
-    ).then((_) => load());
-  }
+    try {
+      final sprays = await AppDatabase.instance.getSpraysForPlot(widget.plotId);
+      final drips =
+          await AppDatabase.instance.getDripApplicationsForPlot(widget.plotId);
 
-  void addSpray() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => SprayFormPage(
-          plotId: widget.plotId,
-          plotTitle: widget.title,
-        ),
-      ),
-    ).then((_) => load());
-  }
+      final records = <Map<String, dynamic>>[];
 
-  void editDrip(Map<String, dynamic> row) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => DripFormPage(
-          plotId: widget.plotId,
-          plotTitle: widget.title,
-          drip: row,
-        ),
-      ),
-    ).then((_) => load());
-  }
+      for (final spray in sprays) {
+        final chemicals =
+            await AppDatabase.instance.getSprayChemicals(spray['id'] as int);
+        records.add({
+          'record_type': 'Spray',
+          'id': spray['id'],
+          'date': spray['spray_date'],
+          'quantity': (spray['water'] as num).toDouble(),
+          'total_cost': (spray['total_cost'] as num).toDouble(),
+          'notes': spray['notes'].toString(),
+          'chemicals': chemicals
+              .map((c) => c['chemical_name'].toString())
+              .join(' + '),
+          'original': spray,
+        });
+      }
 
-  void addDrip() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => DripFormPage(
-          plotId: widget.plotId,
-          plotTitle: widget.title,
-        ),
-      ),
-    ).then((_) => load());
-  }
+      for (final drip in drips) {
+        final chemicals =
+            await AppDatabase.instance.getDripChemicals(drip['id'] as int);
+        records.add({
+          'record_type': 'Drip',
+          'id': drip['id'],
+          'date': drip['drip_date'],
+          'quantity': (drip['acres'] as num).toDouble(),
+          'total_cost': (drip['total_cost'] as num).toDouble(),
+          'notes': drip['notes'].toString(),
+          'chemicals': chemicals
+              .map(
+                (c) =>
+                    '${c['chemical_name']} (${_formatNumber((c['dosage'] as num).toDouble())} ${c['dosage_unit']})',
+              )
+              .join(' + '),
+          'original': drip,
+        });
+      }
 
-  Future<void> deleteSpray(int id) async {
-    final ok = await confirmDelete('Delete spray record?');
-    if (ok) {
-      await AppDb.instance.deleteSpray(id);
-      load();
+      records.sort((a, b) {
+        final da = DateTime.parse(a['date'].toString());
+        final db = DateTime.parse(b['date'].toString());
+        final compare = db.compareTo(da);
+        if (compare != 0) return compare;
+        return (b['id'] as int).compareTo(a['id'] as int);
+      });
+
+      if (!mounted) return;
+      setState(() {
+        _records = records;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _loadError = 'Could not load history: $e';
+      });
     }
   }
 
-  Future<void> deleteDrip(int id) async {
-    final ok = await confirmDelete('Delete drip application?');
-    if (ok) {
-      await AppDb.instance.deleteDrip(id);
-      load();
-    }
+  Future<void> _openSpray(Map<String, dynamic> record) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => AddSprayPage(
+          plotId: widget.plotId,
+          plotTitle: widget.plotTitle,
+          spray: record['original'] as Map<String, dynamic>,
+        ),
+      ),
+    );
+    await _loadRecords();
   }
 
-  Future<bool> confirmDelete(String title) async {
-    return await showDialog<bool>(
-          context: context,
-          builder: (_) => AlertDialog(
-            title: Text(title),
-            content: const Text('This record will be permanently deleted.'),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: const Text('Cancel'),
-              ),
-              FilledButton(
-                style: FilledButton.styleFrom(backgroundColor: Colors.red),
-                onPressed: () => Navigator.pop(context, true),
-                child: const Text('Delete'),
-              ),
-            ],
+  Future<void> _openDrip(Map<String, dynamic> record) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => AddDripPage(
+          plotId: widget.plotId,
+          plotTitle: widget.plotTitle,
+          drip: record['original'] as Map<String, dynamic>,
+        ),
+      ),
+    );
+    await _loadRecords();
+  }
+
+  Future<void> _deleteRecord(Map<String, dynamic> record) async {
+    final type = record['record_type'].toString().toLowerCase();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: Text('Delete $type record?'),
+          content: Text(
+            'This $type record and its chemical details will be deleted.',
           ),
-        ) ??
-        false;
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Colors.red),
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Delete'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true) return;
+
+    if (record['record_type'] == 'Spray') {
+      await AppDatabase.instance.deleteSpray(record['id'] as int);
+    } else {
+      await AppDatabase.instance.deleteDripApplication(record['id'] as int);
+    }
+
+    await _loadRecords();
   }
 
-  String plotInfo() {
-    final p = widget.plot.trim();
-    final c = widget.crop.trim();
-    if (p.isEmpty && c.isEmpty) return 'No plot or crop details';
-    if (p.isEmpty) return 'Crop: $c';
-    if (c.isEmpty) return 'Plot: $p';
-    return 'Plot: $p\nCrop variety: $c';
+  Future<void> _openRecord(Map<String, dynamic> record) async {
+    if (record['record_type'] == 'Spray') {
+      await _openSpray(record);
+    } else {
+      await _openDrip(record);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final records = <Map<String, dynamic>>[
-      ...sprays.map((r) => {'type': 'spray', 'row': r}),
-      ...drips.map((r) => {'type': 'drip', 'row': r}),
-    ];
-
-    records.sort(
-      (a, b) => DateTime.parse(
-        b['row'][a['type'] == 'spray' ? 'spray_date' : 'application_date']
-            .toString(),
-      ).compareTo(
-        DateTime.parse(
-          a['row'][a['type'] == 'spray' ? 'spray_date' : 'application_date']
-              .toString(),
-        ),
-      ),
+    final total = _records.fold<double>(
+      0,
+      (sum, record) => sum + (record['total_cost'] as num).toDouble(),
     );
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.title),
+        title: Text(widget.plotTitle),
         actions: [
           IconButton(
-            onPressed: () => showDialog(
-              context: context,
-              builder: (_) => AlertDialog(
-                title: Text(widget.title),
-                content: Text(plotInfo()),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text('Close'),
+            tooltip: 'Plot information',
+            onPressed: () {
+              showDialog<void>(
+                context: context,
+                builder: (_) => AlertDialog(
+                  title: Text(widget.plotTitle),
+                  content: Text(
+                    'Plot: ${widget.plotName}\n'
+                    'Crop variety: ${widget.cropVariety}',
                   ),
-                ],
-              ),
-            ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('Close'),
+                    ),
+                  ],
+                ),
+              );
+            },
             icon: const Icon(Icons.info_outline),
           ),
         ],
       ),
       floatingActionButton: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.only(left: 16, right: 16),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              FloatingActionButton.extended(
-                heroTag: 'add_spray',
-                onPressed: addSpray,
-                backgroundColor: const Color(0xFF0D47A1),
-                foregroundColor: Colors.white,
-                icon: const Icon(Icons.water_drop),
-                label: const Text('Add spray'),
-              ),
-              const SizedBox(width: 10),
-              FloatingActionButton.extended(
-                heroTag: 'add_drip',
-                onPressed: addDrip,
-                backgroundColor: const Color(0xFF2E7D32),
-                foregroundColor: Colors.white,
-                icon: const Icon(Icons.water),
-                label: const Text('Add drip'),
-              ),
-            ],
-          ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            FloatingActionButton.extended(
+              heroTag: 'add_spray_${widget.plotId}',
+              backgroundColor: const Color(0xFF0D47A1),
+              foregroundColor: Colors.white,
+              onPressed: () async {
+                await Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => AddSprayPage(
+                      plotId: widget.plotId,
+                      plotTitle: widget.plotTitle,
+                    ),
+                  ),
+                );
+                await _loadRecords();
+              },
+              icon: const Icon(Icons.water_drop),
+              label: const Text('Add spray'),
+            ),
+            const SizedBox(width: 10),
+            FloatingActionButton.extended(
+              heroTag: 'add_drip_${widget.plotId}',
+              backgroundColor: Colors.teal.shade700,
+              foregroundColor: Colors.white,
+              onPressed: () async {
+                await Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => AddDripPage(
+                      plotId: widget.plotId,
+                      plotTitle: widget.plotTitle,
+                    ),
+                  ),
+                );
+                await _loadRecords();
+              },
+              icon: const Icon(Icons.opacity),
+              label: const Text('Add drip application'),
+            ),
+          ],
         ),
       ),
-      body: loading
+      body: _loading
           ? const Center(child: CircularProgressIndicator())
-          : records.isEmpty
-              ? const Center(
-                  child: Text('No spray or drip records yet.'),
-                )
-              : SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.fromLTRB(8, 12, 8, 110),
-                  child: DataTable(
-                    headingRowColor: WidgetStateProperty.all(
-                      const Color(0xFFE3F2FD),
+          : _loadError != null
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(30),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(_loadError!, textAlign: TextAlign.center),
+                        const SizedBox(height: 12),
+                        FilledButton(
+                          onPressed: _loadRecords,
+                          child: const Text('Retry'),
+                        ),
+                      ],
                     ),
-                    columns: const [
-                      DataColumn(label: Text('No.')),
-                      DataColumn(label: Text('Type')),
-                      DataColumn(label: Text('Date')),
-                      DataColumn(label: Text('Chemical combination')),
-                      DataColumn(label: Text('Quantity')),
-                      DataColumn(label: Text('Cost')),
-                      DataColumn(label: Text('Notes')),
-                    ],
-                    rows: List.generate(records.length, (i) {
-                      final item = records[i];
-                      final type = item['type'] as String;
-                      final r = item['row'] as Map<String, dynamic>;
-                      final isSpray = type == 'spray';
-                      final dateKey =
-                          isSpray ? 'spray_date' : 'application_date';
-                      final d = DateTime.parse(r[dateKey].toString());
-
-                      return DataRow(
-                        onSelectChanged: (_) {
-                          if (isSpray) {
-                            editSpray(r);
-                          } else {
-                            editDrip(r);
-                          }
-                        },
-                        cells: [
-                          DataCell(Text('${i + 1}')),
-                          DataCell(
-                            Text(
-                              isSpray ? 'Spray' : 'Drip',
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: isSpray
-                                    ? const Color(0xFF0D47A1)
-                                    : const Color(0xFF2E7D32),
-                              ),
-                            ),
-                          ),
-                          DataCell(Text(dateText(d))),
-                          DataCell(
-                            FutureBuilder<List<Map<String, dynamic>>>(
-                              future: isSpray
-                                  ? AppDb.instance.sprayChemicals(r['id'] as int)
-                                  : AppDb.instance.dripChemicals(r['id'] as int),
-                              builder: (_, snapshot) {
-                                if (!snapshot.hasData) {
-                                  return const SizedBox(
-                                    width: 240,
-                                    child: Text('Loading...'),
-                                  );
-                                }
-                                final names = snapshot.data!
-                                    .map((c) => c['chemical_name'].toString())
-                                    .join(' + ');
-                                return SizedBox(
-                                  width: 240,
-                                  child: Text(names),
-                                );
-                              },
-                            ),
-                          ),
-                          DataCell(
-                            Text(
-                              isSpray
-                                  ? '${numText((r['water'] as num).toDouble())} L water'
-                                  : '${numText((r['acres'] as num).toDouble())} acre',
-                            ),
-                          ),
-                          DataCell(
-                            Text(
-                              '₹${money((r['total_cost'] as num).toDouble())}',
-                            ),
-                          ),
-                          DataCell(
-                            SizedBox(
-                              width: 220,
-                              child: Text(
-                                r['notes'].toString().isEmpty
-                                    ? '-'
-                                    : r['notes'].toString(),
-                              ),
-                            ),
-                          ),
-                        ],
-                      );
-                    }),
                   ),
-                ),
+                )
+              : _records.isEmpty
+                  ? const Center(
+                      child: Padding(
+                        padding: EdgeInsets.all(30),
+                        child: Text(
+                          'No spray or drip records for this plot yet.\n\nUse "Add spray" or "Add drip application" to create a record.',
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    )
+                  : ListView(
+                      padding: const EdgeInsets.only(bottom: 120),
+                      children: [
+                        const Padding(
+                          padding: EdgeInsets.fromLTRB(16, 12, 16, 4),
+                          child: Text(
+                            'Tap a record row to edit it. Spray and drip records are both included in the total.',
+                            style: TextStyle(color: Colors.grey),
+                          ),
+                        ),
+                        SingleChildScrollView(
+                          padding: const EdgeInsets.fromLTRB(8, 12, 8, 16),
+                          scrollDirection: Axis.horizontal,
+                          child: DataTable(
+                            columnSpacing: 22,
+                            headingRowColor: MaterialStateProperty.all(
+                              const Color(0xFFE3F2FD),
+                            ),
+                            columns: const [
+                              DataColumn(
+                                label: Text(
+                                  'No.',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFF0D47A1),
+                                  ),
+                                ),
+                              ),
+                              DataColumn(
+                                label: Text(
+                                  'Type',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFF0D47A1),
+                                  ),
+                                ),
+                              ),
+                              DataColumn(
+                                label: Text(
+                                  'Date',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFF0D47A1),
+                                  ),
+                                ),
+                              ),
+                              DataColumn(
+                                label: Text(
+                                  'Chemical / dosage',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFF0D47A1),
+                                  ),
+                                ),
+                              ),
+                              DataColumn(
+                                label: Text(
+                                  'Water / Acres',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFF0D47A1),
+                                  ),
+                                ),
+                              ),
+                              DataColumn(
+                                label: Text(
+                                  'Cost',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFF0D47A1),
+                                  ),
+                                ),
+                              ),
+                              DataColumn(
+                                label: Text(
+                                  'Notes',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFF0D47A1),
+                                  ),
+                                ),
+                              ),
+                              DataColumn(
+                                label: Text(
+                                  'Action',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFF0D47A1),
+                                  ),
+                                ),
+                              ),
+                            ],
+                            rows: List.generate(_records.length, (index) {
+                              final record = _records[index];
+                              final date =
+                                  DateTime.parse(record['date'].toString());
+                              final isSpray = record['record_type'] == 'Spray';
+                              final quantity =
+                                  (record['quantity'] as num).toDouble();
+                              final cost =
+                                  (record['total_cost'] as num).toDouble();
+
+                              return DataRow(
+                                onSelectChanged: (_) => _openRecord(record),
+                                cells: [
+                                  DataCell(Text('${index + 1}')),
+                                  DataCell(
+                                    Chip(
+                                      label: Text(
+                                        isSpray ? 'SPRAY' : 'DRIP',
+                                        style: const TextStyle(fontSize: 11),
+                                      ),
+                                      avatar: Icon(
+                                        isSpray
+                                            ? Icons.water_drop
+                                            : Icons.opacity,
+                                        size: 16,
+                                      ),
+                                    ),
+                                  ),
+                                  DataCell(Text(_formatDate(date))),
+                                  DataCell(
+                                    SizedBox(
+                                      width: 260,
+                                      child: Text(record['chemicals'].toString()),
+                                    ),
+                                  ),
+                                  DataCell(
+                                    Text(
+                                      isSpray
+                                          ? '${_formatNumber(quantity)} L'
+                                          : '${_formatNumber(quantity)} acres',
+                                    ),
+                                  ),
+                                  DataCell(
+                                    Text('₹${cost.toStringAsFixed(2)}'),
+                                  ),
+                                  DataCell(
+                                    SizedBox(
+                                      width: 220,
+                                      child: Text(
+                                        record['notes'].toString().isEmpty
+                                            ? '-'
+                                            : record['notes'].toString(),
+                                      ),
+                                    ),
+                                  ),
+                                  DataCell(
+                                    IconButton(
+                                      tooltip: 'Delete',
+                                      onPressed: () => _deleteRecord(record),
+                                      icon: const Icon(
+                                        Icons.delete_outline,
+                                        color: Colors.red,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              );
+                            }),
+                          ),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                          child: Card(
+                            color: const Color(0xFFE3F2FD),
+                            elevation: 0,
+                            child: Padding(
+                              padding: const EdgeInsets.all(16),
+                              child: Text(
+                                'Total cost: ₹${total.toStringAsFixed(2)}',
+                                style: const TextStyle(
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.bold,
+                                  color: Color(0xFF0D47A1),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
     );
   }
 }
 
+// ============================================================
+// ADD / EDIT DRIP APPLICATION
+// ============================================================
 
-class DripFormPage extends StatefulWidget {
-  const DripFormPage({
+class AddDripPage extends StatefulWidget {
+  const AddDripPage({
     super.key,
     required this.plotId,
     required this.plotTitle,
@@ -1516,403 +1849,504 @@ class DripFormPage extends StatefulWidget {
   final Map<String, dynamic>? drip;
 
   @override
-  State<DripFormPage> createState() => _DripFormPageState();
+  State<AddDripPage> createState() => _AddDripPageState();
 }
 
-class _DripFormPageState extends State<DripFormPage> {
-  final search = TextEditingController();
-  final acres = TextEditingController();
-  final notes = TextEditingController();
-  final dosage = <int, TextEditingController>{};
+class _AddDripPageState extends State<AddDripPage> {
+  final TextEditingController _searchController = TextEditingController();
+  final TextEditingController _acresController = TextEditingController();
+  final TextEditingController _notesController = TextEditingController();
+  final Map<int, TextEditingController> _dosageControllers = {};
 
-  List<Map<String, dynamic>> all = [];
-  List<Map<String, dynamic>> matches = [];
-  final selected = <ChosenDripChemical>[];
-  DateTime date = DateTime.now();
-  bool loading = true;
-  bool saving = false;
+  List<Map<String, dynamic>> _allChemicals = [];
+  List<Map<String, dynamic>> _filteredChemicals = [];
+  final List<SelectedDripChemical> _selectedChemicals = [];
 
-  double get total {
-    final a = double.tryParse(acres.text.trim()) ?? 0;
-    return selected.fold(0, (sum, c) => sum + c.costForAcres(a));
+  DateTime _selectedDate = DateTime.now();
+  bool _loading = true;
+  bool _saving = false;
+
+  bool get _isEditing => widget.drip != null;
+
+  double get _acres =>
+      double.tryParse(_acresController.text.trim()) ?? 0;
+
+  double _chemicalCost(SelectedDripChemical chemical) {
+    // L/acre is converted to ml/acre and kg/acre to gram/acre.
+    // Both conversions are x1000 because the chemical price is stored
+    // per ml or per gram respectively.
+    return _acres * chemical.dosage * 1000.0 * chemical.price;
+  }
+
+  double get _totalCost {
+    return _selectedChemicals.fold<double>(
+      0,
+      (sum, chemical) => sum + _chemicalCost(chemical),
+    );
   }
 
   @override
   void initState() {
     super.initState();
-    search.addListener(filter);
-    acres.addListener(rebuild);
-    load();
+    _acresController.addListener(_recalculate);
+    _searchController.addListener(_filterChemicals);
+    _loadData();
   }
 
   @override
   void dispose() {
-    search.dispose();
-    acres.dispose();
-    notes.dispose();
-    for (final c in dosage.values) c.dispose();
+    _searchController.dispose();
+    _acresController.dispose();
+    _notesController.dispose();
+    for (final controller in _dosageControllers.values) {
+      controller.dispose();
+    }
     super.dispose();
   }
 
-  void rebuild() {
+  void _recalculate() {
     if (mounted) setState(() {});
   }
 
-  Future<void> load() async {
-    all = await AppDb.instance.chemicals();
-    matches = List.of(all);
+  Future<void> _loadData() async {
+    try {
+      final chemicals = await AppDatabase.instance.getChemicals();
 
-    if (widget.drip != null) {
-      final d = widget.drip!;
-      date = DateTime.parse(d['application_date'].toString());
-      acres.text = numText((d['acres'] as num).toDouble());
-      notes.text = d['notes'].toString();
+      if (widget.drip != null) {
+        final drip = widget.drip!;
+        _selectedDate = DateTime.parse(drip['drip_date'].toString());
+        _acresController.text =
+            _formatNumber((drip['acres'] as num).toDouble());
+        _notesController.text = drip['notes'].toString();
 
-      final cs = await AppDb.instance.dripChemicals(d['id'] as int);
-      for (final c in cs) {
-        final id = c['chemical_id'] as int?;
-        if (id == null) continue;
+        final rows =
+            await AppDatabase.instance.getDripChemicals(drip['id'] as int);
 
-        final chosen = ChosenDripChemical(
-          id: id,
-          name: c['chemical_name'].toString(),
-          price: (c['price_per_unit'] as num).toDouble(),
-          dosage: (c['dosage'] as num).toDouble(),
-          unit: c['dosage_unit'].toString(),
-        );
-        selected.add(chosen);
-        makeDosageController(chosen);
+        for (final row in rows) {
+          final chemicalId = row['chemical_id'] as int?;
+          if (chemicalId == null) continue;
+
+          final selected = SelectedDripChemical(
+            id: chemicalId,
+            name: row['chemical_name'].toString(),
+            price: (row['price_per_unit'] as num).toDouble(),
+            dosage: (row['dosage'] as num).toDouble(),
+            dosageUnit: row['dosage_unit'].toString(),
+          );
+          _selectedChemicals.add(selected);
+          _createDosageController(selected);
+        }
       }
-    }
 
-    if (!mounted) return;
-    setState(() => loading = false);
+      if (!mounted) return;
+      setState(() {
+        _allChemicals = chemicals;
+        _filteredChemicals = chemicals;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _loading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not load drip form: $e')),
+      );
+    }
   }
 
-  void filter() {
-    final q = search.text.trim().toLowerCase();
+  void _filterChemicals() {
+    final query = _searchController.text.trim().toLowerCase();
+    if (!mounted) return;
     setState(() {
-      matches = q.isEmpty
-          ? List.of(all)
-          : all.where(
-              (r) => r['name'].toString().toLowerCase().contains(q),
-            ).toList();
+      _filteredChemicals = query.isEmpty
+          ? _allChemicals
+          : _allChemicals.where((chemical) {
+              return chemical['name'].toString().toLowerCase().contains(query);
+            }).toList();
     });
   }
 
-  bool has(int id) => selected.any((c) => c.id == id);
+  bool _isSelected(int chemicalId) {
+    return _selectedChemicals.any((chemical) => chemical.id == chemicalId);
+  }
 
-  void makeDosageController(ChosenDripChemical c) {
-    if (dosage.containsKey(c.id)) return;
+  void _createDosageController(SelectedDripChemical chemical) {
+    if (_dosageControllers.containsKey(chemical.id)) return;
 
     final controller = TextEditingController(
-      text: c.dosage == 0 ? '' : numText(c.dosage),
+      text: chemical.dosage == 0 ? '' : _formatNumber(chemical.dosage),
     );
 
     controller.addListener(() {
-      c.dosage = double.tryParse(controller.text.trim()) ?? 0;
+      final dosage =
+          double.tryParse(controller.text.trim()) ?? 0;
+      final matches =
+          _selectedChemicals.where((item) => item.id == chemical.id);
+      if (matches.isNotEmpty) {
+        matches.first.dosage = dosage;
+      }
       if (mounted) setState(() {});
     });
 
-    dosage[c.id] = controller;
+    _dosageControllers[chemical.id] = controller;
   }
 
-  void choose(Map<String, dynamic> r) {
-    final id = r['id'] as int;
-    if (has(id)) return;
+  void _selectChemical(Map<String, dynamic> row) {
+    final id = row['id'] as int;
+    if (_isSelected(id)) return;
 
-    final c = ChosenDripChemical(
+    final selected = SelectedDripChemical(
       id: id,
-      name: r['name'].toString(),
-      price: (r['price'] as num).toDouble(),
+      name: row['name'].toString(),
+      price: (row['price'] as num).toDouble(),
     );
 
-    setState(() => selected.add(c));
-    makeDosageController(c);
-    search.clear();
+    setState(() => _selectedChemicals.add(selected));
+    _createDosageController(selected);
+    _searchController.clear();
   }
 
-  void unchoose(ChosenDripChemical c) {
-    dosage.remove(c.id)?.dispose();
-    setState(() => selected.removeWhere((x) => x.id == c.id));
+  void _removeChemical(SelectedDripChemical chemical) {
+    final controller = _dosageControllers.remove(chemical.id);
+    controller?.dispose();
+    setState(() {
+      _selectedChemicals.removeWhere((item) => item.id == chemical.id);
+    });
   }
 
-  Future<void> pickDate() async {
-    final d = await showDatePicker(
+  Future<void> _pickDate() async {
+    final picked = await showDatePicker(
       context: context,
-      initialDate: date,
+      initialDate: _selectedDate,
       firstDate: DateTime(2000),
       lastDate: DateTime(2100),
     );
-    if (d != null) setState(() => date = d);
+    if (picked == null) return;
+    setState(() => _selectedDate = picked);
   }
 
-  Future<void> save() async {
-    if (saving) return;
+  Future<void> _save() async {
+    if (_saving) return;
 
-    final a = double.tryParse(acres.text.trim());
-    if (a == null || a <= 0) {
-      error('Enter a valid area in acres.');
+    final acres = double.tryParse(_acresController.text.trim());
+    if (acres == null || acres <= 0) {
+      _showError('Enter a valid acreage greater than 0.');
       return;
     }
-    if (selected.isEmpty) {
-      error('Select at least one chemical.');
+
+    if (_selectedChemicals.isEmpty) {
+      _showError('Select at least one chemical.');
       return;
     }
-    for (final c in selected) {
-      if (c.dosage <= 0) {
-        error('Enter a dosage greater than 0 for ${c.name}.');
+
+    for (final chemical in _selectedChemicals) {
+      if (chemical.dosage <= 0) {
+        _showError(
+          'Enter a dosage greater than 0 for ${chemical.name}.',
+        );
         return;
       }
     }
 
-    setState(() => saving = true);
+    setState(() => _saving = true);
 
-    await AppDb.instance.saveDrip(
-      id: widget.drip?['id'] as int?,
-      plotId: widget.plotId,
-      date: date,
-      acres: a,
-      totalCost: total,
-      notes: notes.text,
-      chemicals: selected,
-    );
+    try {
+      if (_isEditing) {
+        await AppDatabase.instance.updateDripApplication(
+          dripId: widget.drip!['id'] as int,
+          plotId: widget.plotId,
+          date: _selectedDate,
+          acres: acres,
+          totalCost: _totalCost,
+          notes: _notesController.text.trim(),
+          chemicals: _selectedChemicals,
+        );
+      } else {
+        await AppDatabase.instance.addDripApplication(
+          plotId: widget.plotId,
+          date: _selectedDate,
+          acres: acres,
+          totalCost: _totalCost,
+          notes: _notesController.text.trim(),
+          chemicals: _selectedChemicals,
+        );
+      }
 
-    if (!mounted) return;
-    Navigator.pop(context);
+      if (!mounted) return;
+      Navigator.pop(context);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _saving = false);
+      _showError('Could not save drip record.');
+    }
   }
 
-  void error(String text) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  void _showError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.drip == null ? 'Add drip application' : 'Edit drip'),
+        title: Text(_isEditing ? 'Edit drip application' : 'Add drip application'),
       ),
-      body: loading
+      body: _loading
           ? const Center(child: CircularProgressIndicator())
           : ListView(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 30),
               children: [
                 Text(
                   widget.plotTitle,
                   style: const TextStyle(
                     fontSize: 20,
                     fontWeight: FontWeight.bold,
-                    color: Color(0xFF2E7D32),
+                    color: Color(0xFF0D47A1),
                   ),
                 ),
                 const SizedBox(height: 18),
                 InkWell(
-                  onTap: pickDate,
+                  onTap: _pickDate,
+                  borderRadius: BorderRadius.circular(10),
                   child: InputDecorator(
                     decoration: const InputDecoration(
                       labelText: 'Date',
                       prefixIcon: Icon(Icons.calendar_today),
                     ),
-                    child: Text(dateText(date)),
+                    child: Text(_formatDate(_selectedDate)),
                   ),
                 ),
                 const SizedBox(height: 14),
                 TextField(
-                  controller: acres,
+                  controller: _acresController,
                   keyboardType:
                       const TextInputType.numberWithOptions(decimal: true),
                   decoration: const InputDecoration(
-                    labelText: 'Area',
-                    suffixText: 'acre',
+                    labelText: 'Acreage',
+                    hintText: 'Example: 2',
+                    suffixText: 'acres',
                     prefixIcon: Icon(Icons.landscape),
                   ),
                 ),
-                const SizedBox(height: 8),
-                const Text(
-                  'Drip dosage is entered per acre. L and kg are converted to 1000 ml/g base units automatically.',
-                  style: TextStyle(color: Colors.grey),
-                ),
-                const SizedBox(height: 20),
+                const SizedBox(height: 22),
                 const Text(
                   'Search chemicals',
                   style: TextStyle(
                     fontSize: 17,
                     fontWeight: FontWeight.bold,
-                    color: Color(0xFF2E7D32),
+                    color: Color(0xFF0D47A1),
                   ),
                 ),
                 const SizedBox(height: 8),
                 TextField(
-                  controller: search,
+                  controller: _searchController,
                   decoration: InputDecoration(
                     labelText: 'Search chemicals',
-                    hintText: 'Type a chemical name',
+                    hintText: 'Type chemical name',
                     prefixIcon: const Icon(Icons.search),
-                    suffixIcon: search.text.isEmpty
+                    suffixIcon: _searchController.text.isEmpty
                         ? null
                         : IconButton(
-                            onPressed: search.clear,
+                            onPressed: _searchController.clear,
                             icon: const Icon(Icons.clear),
                           ),
                   ),
                 ),
                 const SizedBox(height: 8),
-                if (matches.isNotEmpty)
+                if (_filteredChemicals.isNotEmpty)
                   Card(
+                    margin: EdgeInsets.zero,
                     child: ConstrainedBox(
                       constraints: const BoxConstraints(maxHeight: 220),
                       child: ListView.builder(
                         shrinkWrap: true,
-                        itemCount: matches.length,
-                        itemBuilder: (_, i) {
-                          final r = matches[i];
-                          final id = r['id'] as int;
-                          final already = has(id);
+                        itemCount: _filteredChemicals.length,
+                        itemBuilder: (context, index) {
+                          final chemical = _filteredChemicals[index];
+                          final id = chemical['id'] as int;
+                          final selected = _isSelected(id);
                           return ListTile(
+                            dense: true,
                             leading: Icon(
-                              already
+                              selected
                                   ? Icons.check_circle
                                   : Icons.science_outlined,
-                              color: already
+                              color: selected
                                   ? Colors.green
-                                  : const Color(0xFF2E7D32),
+                                  : const Color(0xFF0D47A1),
                             ),
-                            title: Text(r['name'].toString()),
+                            title: Text(chemical['name'].toString()),
                             subtitle: Text(
-                              '₹${money((r['price'] as num).toDouble())} per base unit',
+                              '₹${(chemical['price'] as num).toDouble().toStringAsFixed(2)} per unit',
                             ),
-                            enabled: !already,
-                            onTap: already ? null : () => choose(r),
+                            enabled: !selected,
+                            onTap: selected
+                                ? null
+                                : () => _selectChemical(chemical),
                           );
                         },
                       ),
                     ),
                   ),
                 const SizedBox(height: 18),
-                ...selected.map(
-                  (c) => Card(
-                    margin: const EdgeInsets.only(bottom: 10),
-                    child: Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Expanded(
-                                child: Text(
-                                  c.name,
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 16,
-                                  ),
-                                ),
-                              ),
-                              IconButton(
-                                onPressed: () => unchoose(c),
-                                icon: const Icon(Icons.close),
-                              ),
-                            ],
-                          ),
-                          Text(
-                            'Saved price: ₹${money(c.price)} per base unit',
-                            style: const TextStyle(color: Colors.grey),
-                          ),
-                          const SizedBox(height: 10),
-                          Row(
-                            children: [
-                              Expanded(
-                                child: TextField(
-                                  controller: dosage[c.id],
-                                  keyboardType:
-                                      const TextInputType.numberWithOptions(
-                                    decimal: true,
-                                  ),
-                                  decoration: const InputDecoration(
-                                    labelText: 'Dosage per acre',
-                                    prefixIcon: Icon(Icons.opacity),
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 10),
-                              SizedBox(
-                                width: 105,
-                                child: DropdownButtonFormField<String>(
-                                  value: c.unit,
-                                  decoration: const InputDecoration(
-                                    labelText: 'Unit',
-                                  ),
-                                  items: const [
-                                    DropdownMenuItem(
-                                      value: 'L',
-                                      child: Text('L'),
-                                    ),
-                                    DropdownMenuItem(
-                                      value: 'kg',
-                                      child: Text('kg'),
-                                    ),
-                                  ],
-                                  onChanged: (v) {
-                                    if (v == null) return;
-                                    setState(() => c.unit = v);
-                                  },
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 6),
-                          Text(
-                            'Chemical cost: ₹${money(c.costForAcres(double.tryParse(acres.text.trim()) ?? 0))}',
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              color: Color(0xFF2E7D32),
-                            ),
-                          ),
-                        ],
-                      ),
+                if (_selectedChemicals.isNotEmpty) ...[
+                  const Text(
+                    'Selected chemicals',
+                    style: TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF0D47A1),
                     ),
                   ),
-                ),
+                  const SizedBox(height: 10),
+                  ..._selectedChemicals.map((chemical) {
+                    final controller = _dosageControllers[chemical.id]!;
+                    return Card(
+                      margin: const EdgeInsets.only(bottom: 10),
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    chemical.name,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 16,
+                                    ),
+                                  ),
+                                ),
+                                IconButton(
+                                  onPressed: () => _removeChemical(chemical),
+                                  icon: const Icon(Icons.close),
+                                ),
+                              ],
+                            ),
+                            Text(
+                              'Saved price: ₹${chemical.price.toStringAsFixed(2)} per unit',
+                              style: const TextStyle(color: Colors.grey),
+                            ),
+                            const SizedBox(height: 10),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: TextField(
+                                    controller: controller,
+                                    keyboardType:
+                                        const TextInputType.numberWithOptions(
+                                      decimal: true,
+                                    ),
+                                    decoration: const InputDecoration(
+                                      labelText: 'Dosage',
+                                      hintText: 'Example: 2',
+                                      prefixIcon: Icon(Icons.opacity),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: DropdownButtonFormField<String>(
+                                    value: chemical.dosageUnit,
+                                    decoration: const InputDecoration(
+                                      labelText: 'Dosage unit',
+                                    ),
+                                    items: const [
+                                      DropdownMenuItem(
+                                        value: 'L/acre',
+                                        child: Text('L/acre'),
+                                      ),
+                                      DropdownMenuItem(
+                                        value: 'kg/acre',
+                                        child: Text('kg/acre'),
+                                      ),
+                                    ],
+                                    onChanged: (value) {
+                                      if (value == null) return;
+                                      setState(
+                                        () => chemical.dosageUnit = value,
+                                      );
+                                    },
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Cost: ${_formatNumber(_acres)} acres × '
+                              '${_formatNumber(chemical.dosage)} ${chemical.dosageUnit} × '
+                              '1000 × ₹${chemical.price.toStringAsFixed(2)} = '
+                              '₹${_chemicalCost(chemical).toStringAsFixed(2)}',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFF0D47A1),
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              chemical.dosageUnit == 'L/acre'
+                                  ? 'L/acre is converted to ml/acre × 1000.'
+                                  : 'kg/acre is converted to gram/acre × 1000.',
+                              style: const TextStyle(
+                                color: Colors.grey,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  }),
+                ],
+                const SizedBox(height: 6),
                 Card(
-                  color: const Color(0xFFE8F5E9),
+                  color: const Color(0xFFE0F2F1),
+                  elevation: 0,
                   child: Padding(
                     padding: const EdgeInsets.all(16),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Area: ${numText(double.tryParse(acres.text) ?? 0)} acre',
+                          'Acreage: ${_formatNumber(_acres)} acres',
+                          style: const TextStyle(
+                            fontSize: 16,
+                            color: Color(0xFF00695C),
+                          ),
                         ),
                         const SizedBox(height: 8),
                         Text(
-                          'Total cost: ₹${money(total)}',
+                          'Total cost: ₹${_totalCost.toStringAsFixed(2)}',
                           style: const TextStyle(
                             fontSize: 21,
                             fontWeight: FontWeight.bold,
-                            color: Color(0xFF2E7D32),
+                            color: Color(0xFF00695C),
                           ),
                         ),
                       ],
                     ),
                   ),
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 18),
                 TextField(
-                  controller: notes,
+                  controller: _notesController,
                   maxLines: 4,
                   decoration: const InputDecoration(
                     labelText: 'Notes',
                     hintText: 'Observations or other information',
-                    prefixIcon: Icon(Icons.notes),
                     alignLabelWithHint: true,
+                    prefixIcon: Icon(Icons.notes),
                   ),
                 ),
-                const SizedBox(height: 22),
+                const SizedBox(height: 24),
                 SizedBox(
                   height: 52,
                   child: FilledButton.icon(
-                    onPressed: saving ? null : save,
-                    icon: saving
+                    onPressed: _saving ? null : _save,
+                    icon: _saving
                         ? const SizedBox(
                             height: 20,
                             width: 20,
@@ -1923,11 +2357,11 @@ class _DripFormPageState extends State<DripFormPage> {
                           )
                         : const Icon(Icons.save),
                     label: Text(
-                      saving
+                      _saving
                           ? 'Saving...'
-                          : widget.drip == null
-                              ? 'Save drip application'
-                              : 'Save changes',
+                          : _isEditing
+                              ? 'Save changes'
+                              : 'Save drip application',
                     ),
                   ),
                 ),
@@ -1937,73 +2371,12 @@ class _DripFormPageState extends State<DripFormPage> {
   }
 }
 
-olor: const Color(0xFF0D47A1),
-        foregroundColor: Colors.white,
-        icon: const Icon(Icons.add),
-        label: const Text('Add spray'),
-      ),
-      body: loading
-          ? const Center(child: CircularProgressIndicator())
-          : rows.isEmpty
-              ? const Center(child: Text('No spray records yet.'))
-              : SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.fromLTRB(8, 12, 8, 100),
-                  child: DataTable(
-                    headingRowColor: WidgetStateProperty.all(
-                      const Color(0xFFE3F2FD),
-                    ),
-                    columns: const [
-                      DataColumn(label: Text('No.')),
-                      DataColumn(label: Text('Date')),
-                      DataColumn(label: Text('Chemical combination')),
-                      DataColumn(label: Text('Water')),
-                      DataColumn(label: Text('Cost')),
-                      DataColumn(label: Text('Notes')),
-                    ],
-                    rows: List.generate(rows.length, (i) {
-                      final r = rows[i];
-                      final d = DateTime.parse(r['spray_date'].toString());
-                      return DataRow(
-                        onSelectChanged: (_) => edit(r),
-                        cells: [
-                          DataCell(Text('${i + 1}')),
-                          DataCell(Text(dateText(d))),
-                          DataCell(
-                            SizedBox(
-                              width: 240,
-                              child: Text(combinations[i]),
-                            ),
-                          ),
-                          DataCell(
-                            Text('${numText((r['water'] as num).toDouble())} L'),
-                          ),
-                          DataCell(
-                            Text(
-                              '₹${money((r['total_cost'] as num).toDouble())}',
-                            ),
-                          ),
-                          DataCell(
-                            SizedBox(
-                              width: 220,
-                              child: Text(
-                                r['notes'].toString().isEmpty
-                                    ? '-'
-                                    : r['notes'].toString(),
-                              ),
-                            ),
-                          ),
-                        ],
-                      );
-                    }),
-                  ),
-                ),
-    );
-  }
-}
+// ============================================================
+// ADD / EDIT SPRAY
+// ============================================================
 
-class SprayFormPage extends StatefulWidget {
-  const SprayFormPage({
+class AddSprayPage extends StatefulWidget {
+  const AddSprayPage({
     super.key,
     required this.plotId,
     required this.plotTitle,
@@ -2015,185 +2388,339 @@ class SprayFormPage extends StatefulWidget {
   final Map<String, dynamic>? spray;
 
   @override
-  State<SprayFormPage> createState() => _SprayFormPageState();
+  State<AddSprayPage> createState() => _AddSprayPageState();
 }
 
-class _SprayFormPageState extends State<SprayFormPage> {
-  final search = TextEditingController();
-  final water = TextEditingController();
-  final notes = TextEditingController();
-  final dosage = <int, TextEditingController>{};
+class _AddSprayPageState extends State<AddSprayPage> {
+  final TextEditingController _searchController =
+      TextEditingController();
 
-  List<Map<String, dynamic>> all = [];
-  List<Map<String, dynamic>> matches = [];
-  final selected = <ChosenChemical>[];
-  DateTime date = DateTime.now();
-  bool loading = true;
-  bool saving = false;
+  final TextEditingController _waterController =
+      TextEditingController();
 
-  double get total {
-    final w = double.tryParse(water.text.trim()) ?? 0;
-    return selected.fold(0, (sum, c) => sum + c.costForWater(w));
+  final TextEditingController _notesController =
+      TextEditingController();
+
+  final Map<int, TextEditingController> _dosageControllers = {};
+
+  List<Map<String, dynamic>> _allChemicals = [];
+  List<Map<String, dynamic>> _filteredChemicals = [];
+  final List<SelectedChemical> _selectedChemicals = [];
+
+  DateTime _selectedDate = DateTime.now();
+
+  bool _loading = true;
+  bool _saving = false;
+
+  bool get _isEditing => widget.spray != null;
+
+  double get _water {
+    return double.tryParse(
+          _waterController.text.trim(),
+        ) ??
+        0;
+  }
+
+  double get _totalCost {
+    double total = 0;
+    for (final chemical in _selectedChemicals) {
+      total += _water * chemical.dosage * chemical.price;
+    }
+    return total;
   }
 
   @override
   void initState() {
     super.initState();
-    search.addListener(filter);
-    water.addListener(rebuild);
-    load();
+
+    _waterController.addListener(_recalculate);
+    _searchController.addListener(_filterChemicals);
+
+    _loadData();
   }
 
   @override
   void dispose() {
-    search.dispose();
-    water.dispose();
-    notes.dispose();
-    for (final c in dosage.values) c.dispose();
+    _searchController.dispose();
+    _waterController.dispose();
+    _notesController.dispose();
+
+    for (final controller in _dosageControllers.values) {
+      controller.dispose();
+    }
+
     super.dispose();
   }
 
-  void rebuild() {
-    if (mounted) setState(() {});
+  void _recalculate() {
+    if (mounted) {
+      setState(() {});
+    }
   }
 
-  Future<void> load() async {
-    all = await AppDb.instance.chemicals();
-    matches = List.of(all);
+  Future<void> _loadData() async {
+    try {
+      await _loadDataInner();
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() {
+        _loading = false;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not load spray form: $e')),
+      );
+    }
+  }
+
+  Future<void> _loadDataInner() async {
+    final chemicals = await AppDatabase.instance.getChemicals();
 
     if (widget.spray != null) {
-      final s = widget.spray!;
-      date = DateTime.parse(s['spray_date'].toString());
-      water.text = numText((s['water'] as num).toDouble());
-      notes.text = s['notes'].toString();
+      final spray = widget.spray!;
 
-      final cs = await AppDb.instance.sprayChemicals(s['id'] as int);
-      for (final c in cs) {
-        final id = c['chemical_id'] as int?;
-        if (id == null) continue;
+      _selectedDate = DateTime.parse(
+        spray['spray_date'].toString(),
+      );
 
-        final chosen = ChosenChemical(
-          id: id,
-          name: c['chemical_name'].toString(),
-          price: (c['price_per_unit'] as num).toDouble(),
-          dosage: (c['dosage'] as num).toDouble(),
+      _waterController.text = _formatNumber(
+        (spray['water'] as num).toDouble(),
+      );
+
+      _notesController.text = spray['notes'].toString();
+
+      final sprayChemicals =
+          await AppDatabase.instance.getSprayChemicals(
+        spray['id'] as int,
+      );
+
+      for (final row in sprayChemicals) {
+        final chemicalId =
+            row['chemical_id'] as int?;
+
+        if (chemicalId == null) {
+          continue;
+        }
+
+        final selected = SelectedChemical(
+          id: chemicalId,
+          name: row['chemical_name'].toString(),
+          price: (row['price_per_unit'] as num).toDouble(),
+          dosage: (row['dosage'] as num).toDouble(),
         );
-        selected.add(chosen);
-        makeDosageController(chosen);
+
+        _selectedChemicals.add(selected);
+
+        _createDosageController(selected);
       }
     }
 
     if (!mounted) return;
-    setState(() => loading = false);
-  }
 
-  void filter() {
-    final q = search.text.trim().toLowerCase();
     setState(() {
-      matches = q.isEmpty
-          ? List.of(all)
-          : all.where(
-              (r) => r['name'].toString().toLowerCase().contains(q),
-            ).toList();
+      _allChemicals = chemicals;
+      _filteredChemicals = chemicals;
+      _loading = false;
     });
   }
 
-  bool has(int id) => selected.any((c) => c.id == id);
+  void _filterChemicals() {
+    final query = _searchController.text.trim().toLowerCase();
 
-  void makeDosageController(ChosenChemical c) {
-    if (dosage.containsKey(c.id)) return;
+    setState(() {
+      if (query.isEmpty) {
+        _filteredChemicals = _allChemicals;
+      } else {
+        _filteredChemicals = _allChemicals.where((chemical) {
+          final name = chemical['name'].toString().toLowerCase();
+          return name.contains(query);
+        }).toList();
+      }
+    });
+  }
+
+  bool _isSelected(int chemicalId) {
+    return _selectedChemicals.any(
+      (chemical) => chemical.id == chemicalId,
+    );
+  }
+
+  void _createDosageController(
+    SelectedChemical chemical,
+  ) {
+    if (_dosageControllers.containsKey(chemical.id)) {
+      return;
+    }
 
     final controller = TextEditingController(
-      text: c.dosage == 0 ? '' : numText(c.dosage),
+      text: chemical.dosage == 0
+          ? ''
+          : _formatNumber(chemical.dosage),
     );
 
     controller.addListener(() {
-      c.dosage = double.tryParse(controller.text.trim()) ?? 0;
-      if (mounted) setState(() {});
+      final dosage = double.tryParse(
+            controller.text.trim(),
+          ) ??
+          0;
+
+      final selected = _selectedChemicals.cast<SelectedChemical?>().firstWhere(
+            (item) => item?.id == chemical.id,
+            orElse: () => null,
+          );
+
+      if (selected != null) {
+        selected.dosage = dosage;
+      }
+
+      if (mounted) {
+        setState(() {});
+      }
     });
 
-    dosage[c.id] = controller;
+    _dosageControllers[chemical.id] = controller;
   }
 
-  void choose(Map<String, dynamic> r) {
-    final id = r['id'] as int;
-    if (has(id)) return;
+  void _selectChemical(Map<String, dynamic> row) {
+    final id = row['id'] as int;
 
-    final c = ChosenChemical(
+    if (_isSelected(id)) {
+      return;
+    }
+
+    final selected = SelectedChemical(
       id: id,
-      name: r['name'].toString(),
-      price: (r['price'] as num).toDouble(),
+      name: row['name'].toString(),
+      price: (row['price'] as num).toDouble(),
     );
 
-    setState(() => selected.add(c));
-    makeDosageController(c);
-    search.clear();
+    setState(() {
+      _selectedChemicals.add(selected);
+    });
+
+    _createDosageController(selected);
+
+    _searchController.clear();
   }
 
-  void unchoose(ChosenChemical c) {
-    dosage.remove(c.id)?.dispose();
-    setState(() => selected.removeWhere((x) => x.id == c.id));
+  void _removeChemical(SelectedChemical chemical) {
+    final controller = _dosageControllers.remove(chemical.id);
+    controller?.dispose();
+
+    setState(() {
+      _selectedChemicals.removeWhere(
+        (item) => item.id == chemical.id,
+      );
+    });
   }
 
-  Future<void> pickDate() async {
-    final d = await showDatePicker(
+  Future<void> _pickDate() async {
+    final picked = await showDatePicker(
       context: context,
-      initialDate: date,
+      initialDate: _selectedDate,
       firstDate: DateTime(2000),
       lastDate: DateTime(2100),
     );
-    if (d != null) setState(() => date = d);
+
+    if (picked == null) return;
+
+    setState(() {
+      _selectedDate = picked;
+    });
   }
 
-  Future<void> save() async {
-    if (saving) return;
+  Future<void> _save() async {
+    if (_saving) return;
 
-    final w = double.tryParse(water.text.trim());
-    if (w == null || w < 0) {
-      error('Enter a valid water quantity.');
+    final water = double.tryParse(
+      _waterController.text.trim(),
+    );
+
+    if (water == null || water < 0) {
+      _showError('Enter a valid water quantity.');
       return;
     }
-    if (selected.isEmpty) {
-      error('Select at least one chemical.');
+
+    if (_selectedChemicals.isEmpty) {
+      _showError('Select at least one chemical.');
       return;
     }
-    for (final c in selected) {
-      if (c.dosage <= 0) {
-        error('Enter a dosage greater than 0 for ${c.name}.');
+
+    for (final chemical in _selectedChemicals) {
+      if (chemical.dosage <= 0) {
+        _showError(
+          'Enter a dosage greater than 0 for ${chemical.name}.',
+        );
         return;
       }
     }
 
-    setState(() => saving = true);
+    setState(() {
+      _saving = true;
+    });
 
-    await AppDb.instance.saveSpray(
-      id: widget.spray?['id'] as int?,
-      plotId: widget.plotId,
-      date: date,
-      water: w,
-      totalCost: total,
-      notes: notes.text,
-      chemicals: selected,
-    );
+    try {
+      if (_isEditing) {
+        await AppDatabase.instance.updateSpray(
+          sprayId: widget.spray!['id'] as int,
+          plotId: widget.plotId,
+          date: _selectedDate,
+          water: water,
+          totalCost: _totalCost,
+          notes: _notesController.text.trim(),
+          chemicals: _selectedChemicals,
+        );
+      } else {
+        await AppDatabase.instance.addSpray(
+          plotId: widget.plotId,
+          date: _selectedDate,
+          water: water,
+          totalCost: _totalCost,
+          notes: _notesController.text.trim(),
+          chemicals: _selectedChemicals,
+        );
+      }
 
-    if (!mounted) return;
-    Navigator.pop(context);
+      if (!mounted) return;
+
+      Navigator.pop(context);
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() {
+        _saving = false;
+      });
+
+      _showError('Could not save spray record.');
+    }
   }
 
-  void error(String text) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  void _showError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.spray == null ? 'Add spray' : 'Edit spray'),
+        title: Text(
+          _isEditing ? 'Edit spray' : 'Add spray',
+        ),
       ),
-      body: loading
-          ? const Center(child: CircularProgressIndicator())
+      body: _loading
+          ? const Center(
+              child: CircularProgressIndicator(),
+            )
           : ListView(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.fromLTRB(
+                16,
+                16,
+                16,
+                30,
+              ),
               children: [
                 Text(
                   widget.plotTitle,
@@ -2204,28 +2731,41 @@ class _SprayFormPageState extends State<SprayFormPage> {
                   ),
                 ),
                 const SizedBox(height: 18),
+
+                // DATE
                 InkWell(
-                  onTap: pickDate,
+                  onTap: _pickDate,
+                  borderRadius: BorderRadius.circular(10),
                   child: InputDecorator(
                     decoration: const InputDecoration(
                       labelText: 'Date',
                       prefixIcon: Icon(Icons.calendar_today),
                     ),
-                    child: Text(dateText(date)),
+                    child: Text(
+                      _formatDate(_selectedDate),
+                    ),
                   ),
                 ),
+
                 const SizedBox(height: 14),
+
+                // WATER
                 TextField(
-                  controller: water,
+                  controller: _waterController,
                   keyboardType:
-                      const TextInputType.numberWithOptions(decimal: true),
+                      const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
                   decoration: const InputDecoration(
                     labelText: 'Water quantity',
+                    hintText: 'Example: 500',
                     suffixText: 'L',
                     prefixIcon: Icon(Icons.water_drop),
                   ),
                 ),
-                const SizedBox(height: 20),
+
+                const SizedBox(height: 22),
+
                 const Text(
                   'Search chemicals',
                   style: TextStyle(
@@ -2234,119 +2774,185 @@ class _SprayFormPageState extends State<SprayFormPage> {
                     color: Color(0xFF0D47A1),
                   ),
                 ),
+
                 const SizedBox(height: 8),
+
+                // CHEMICAL SEARCH
                 TextField(
-                  controller: search,
+                  controller: _searchController,
                   decoration: InputDecoration(
                     labelText: 'Search chemicals',
-                    hintText: 'Type Tit, for example',
+                    hintText: 'Type chemical name, e.g. Tit',
                     prefixIcon: const Icon(Icons.search),
-                    suffixIcon: search.text.isEmpty
+                    suffixIcon: _searchController.text.isEmpty
                         ? null
                         : IconButton(
-                            onPressed: search.clear,
+                            onPressed: () {
+                              _searchController.clear();
+                            },
                             icon: const Icon(Icons.clear),
                           ),
                   ),
                 ),
+
                 const SizedBox(height: 8),
-                if (matches.isNotEmpty)
+
+                if (_filteredChemicals.isNotEmpty)
                   Card(
+                    margin: EdgeInsets.zero,
                     child: ConstrainedBox(
-                      constraints: const BoxConstraints(maxHeight: 220),
+                      constraints: const BoxConstraints(
+                        maxHeight: 220,
+                      ),
                       child: ListView.builder(
                         shrinkWrap: true,
-                        itemCount: matches.length,
-                        itemBuilder: (_, i) {
-                          final r = matches[i];
-                          final id = r['id'] as int;
-                          final already = has(id);
+                        itemCount: _filteredChemicals.length,
+                        itemBuilder: (context, index) {
+                          final chemical =
+                              _filteredChemicals[index];
+
+                          final id = chemical['id'] as int;
+                          final selected = _isSelected(id);
+
                           return ListTile(
+                            dense: true,
                             leading: Icon(
-                              already
+                              selected
                                   ? Icons.check_circle
                                   : Icons.science_outlined,
-                              color: already
+                              color: selected
                                   ? Colors.green
                                   : const Color(0xFF0D47A1),
                             ),
-                            title: Text(r['name'].toString()),
-                            subtitle: Text(
-                              '₹${money((r['price'] as num).toDouble())} per unit',
+                            title: Text(
+                              chemical['name'].toString(),
                             ),
-                            enabled: !already,
-                            onTap: already ? null : () => choose(r),
+                            subtitle: Text(
+                              '₹${(chemical['price'] as num).toDouble().toStringAsFixed(2)} per unit',
+                            ),
+                            enabled: !selected,
+                            onTap: selected
+                                ? null
+                                : () => _selectChemical(
+                                      chemical,
+                                    ),
                           );
                         },
                       ),
                     ),
                   ),
+
                 const SizedBox(height: 18),
-                ...selected.map(
-                  (c) => Card(
-                    margin: const EdgeInsets.only(bottom: 10),
-                    child: Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
+
+                if (_selectedChemicals.isNotEmpty) ...[
+                  const Text(
+                    'Selected chemicals',
+                    style: TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF0D47A1),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+
+                  ..._selectedChemicals.map(
+                    (chemical) {
+                      final dosageController =
+                          _dosageControllers[chemical.id]!;
+
+                      return Card(
+                        margin: const EdgeInsets.only(
+                          bottom: 10,
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: Column(
+                            crossAxisAlignment:
+                                CrossAxisAlignment.start,
                             children: [
-                              Expanded(
-                                child: Text(
-                                  c.name,
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 16,
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      chemical.name,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 16,
+                                      ),
+                                    ),
                                   ),
+                                  IconButton(
+                                    tooltip: 'Remove',
+                                    onPressed: () =>
+                                        _removeChemical(
+                                      chemical,
+                                    ),
+                                    icon: const Icon(
+                                      Icons.close,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              Text(
+                                'Saved price: ₹${chemical.price.toStringAsFixed(2)} per unit',
+                                style: const TextStyle(
+                                  color: Colors.grey,
                                 ),
                               ),
-                              IconButton(
-                                onPressed: () => unchoose(c),
-                                icon: const Icon(Icons.close),
+                              const SizedBox(height: 10),
+                              TextField(
+                                controller: dosageController,
+                                keyboardType:
+                                    const TextInputType
+                                        .numberWithOptions(
+                                  decimal: true,
+                                ),
+                                decoration:
+                                    const InputDecoration(
+                                  labelText: 'Dosage',
+                                  hintText: 'Enter dosage',
+                                  prefixIcon:
+                                      Icon(Icons.opacity),
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                'Cost: ${_formatNumber(_water)} × ${_formatNumber(chemical.dosage)} × ₹${chemical.price.toStringAsFixed(2)} = ₹${(_water * chemical.dosage * chemical.price).toStringAsFixed(2)}',
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  color: Color(0xFF0D47A1),
+                                ),
                               ),
                             ],
                           ),
-                          Text(
-                            'Saved price: ₹${money(c.price)} per unit',
-                            style: const TextStyle(color: Colors.grey),
-                          ),
-                          const SizedBox(height: 10),
-                          TextField(
-                            controller: dosage[c.id],
-                            keyboardType:
-                                const TextInputType.numberWithOptions(
-                              decimal: true,
-                            ),
-                            decoration: const InputDecoration(
-                              labelText: 'Dosage',
-                              prefixIcon: Icon(Icons.opacity),
-                            ),
-                          ),
-                          const SizedBox(height: 6),
-                          Text(
-                            'Chemical cost: ₹${money(c.costForWater(double.tryParse(water.text.trim()) ?? 0))}',
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              color: Color(0xFF0D47A1),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
+                        ),
+                      );
+                    },
                   ),
-                ),
+                ],
+
+                const SizedBox(height: 6),
+
+                // TOTAL COST
                 Card(
                   color: const Color(0xFFE3F2FD),
+                  elevation: 0,
                   child: Padding(
                     padding: const EdgeInsets.all(16),
                     child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                      crossAxisAlignment:
+                          CrossAxisAlignment.start,
                       children: [
-                        Text('Water: ${numText(double.tryParse(water.text) ?? 0)} L'),
+                        Text(
+                          'Water: ${_formatNumber(_water)} L',
+                          style: const TextStyle(
+                            fontSize: 16,
+                            color: Color(0xFF0D47A1),
+                          ),
+                        ),
                         const SizedBox(height: 8),
                         Text(
-                          'Total cost: ₹${money(total)}',
+                          'Total cost: ₹${_totalCost.toStringAsFixed(2)}',
                           style: const TextStyle(
                             fontSize: 21,
                             fontWeight: FontWeight.bold,
@@ -2357,23 +2963,29 @@ class _SprayFormPageState extends State<SprayFormPage> {
                     ),
                   ),
                 ),
-                const SizedBox(height: 16),
+
+                const SizedBox(height: 18),
+
+                // NOTES
                 TextField(
-                  controller: notes,
+                  controller: _notesController,
                   maxLines: 4,
                   decoration: const InputDecoration(
                     labelText: 'Notes',
-                    hintText: 'Observations or other information',
-                    prefixIcon: Icon(Icons.notes),
+                    hintText:
+                        'Observations or other information',
                     alignLabelWithHint: true,
+                    prefixIcon: Icon(Icons.notes),
                   ),
                 ),
-                const SizedBox(height: 22),
+
+                const SizedBox(height: 24),
+
                 SizedBox(
                   height: 52,
                   child: FilledButton.icon(
-                    onPressed: saving ? null : save,
-                    icon: saving
+                    onPressed: _saving ? null : _save,
+                    icon: _saving
                         ? const SizedBox(
                             height: 20,
                             width: 20,
@@ -2384,11 +2996,11 @@ class _SprayFormPageState extends State<SprayFormPage> {
                           )
                         : const Icon(Icons.save),
                     label: Text(
-                      saving
+                      _saving
                           ? 'Saving...'
-                          : widget.spray == null
-                              ? 'Save spray'
-                              : 'Save changes',
+                          : _isEditing
+                              ? 'Save changes'
+                              : 'Save spray',
                     ),
                   ),
                 ),
@@ -2396,4 +3008,23 @@ class _SprayFormPageState extends State<SprayFormPage> {
             ),
     );
   }
+}
+
+// ============================================================
+// HELPERS
+// ============================================================
+
+String _formatDate(DateTime date) {
+  final day = date.day.toString().padLeft(2, '0');
+  final month = date.month.toString().padLeft(2, '0');
+
+  return '$day/$month/${date.year}';
+}
+
+String _formatNumber(double value) {
+  if (value == value.roundToDouble()) {
+    return value.toInt().toString();
+  }
+
+  return value.toStringAsFixed(2);
 }
