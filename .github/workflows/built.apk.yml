@@ -21,7 +21,10 @@ jobs:
           cache: true
 
       - name: Create Android project files
-        run: flutter create --platforms=android --org com.rohitjagtap --project-name agri_sprey_offline .
+  run: flutter create --platforms=android --org com.rohitjagtap --project-name agri_spray_offline .
+
+- name: Set app name
+  run: sed -i 's/android:label="[^"]*"/android:label="FarmBook"/' android/app/src/main/AndroidManifest.xml
 
       - name: Install dependencies
         run: flutter pub get
