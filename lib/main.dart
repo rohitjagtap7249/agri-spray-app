@@ -1611,6 +1611,7 @@ class _ChemicalsPageState extends State<ChemicalsPage> {
                       name,
                       excludeId: isEditing ? chemical['id'] as int : null,
                     );
+                    if (!dialogContext.mounted) return;
                     if (duplicate) {
                       ScaffoldMessenger.of(dialogContext).showSnackBar(
                         const SnackBar(
@@ -1638,6 +1639,7 @@ class _ChemicalsPageState extends State<ChemicalsPage> {
                         );
                       }
                     } on StateError {
+                      if (!dialogContext.mounted) return;
                       ScaffoldMessenger.of(dialogContext).showSnackBar(
                         const SnackBar(
                           content: Text(
@@ -1648,8 +1650,9 @@ class _ChemicalsPageState extends State<ChemicalsPage> {
                       return;
                     }
 
-                    if (!mounted) return;
+                    if (!dialogContext.mounted) return;
                     Navigator.pop(dialogContext);
+                    if (!mounted) return;
                     await _loadChemicals();
                   },
                   child: Text(isEditing ? 'Save' : 'Add'),
@@ -2086,9 +2089,9 @@ class _PlotHistoryPageState extends State<PlotHistoryPage> {
                   );
                 }
 
-                if (!mounted) return;
-
+                if (!dialogContext.mounted) return;
                 Navigator.pop(dialogContext);
+                if (!mounted) return;
                 await _loadPlots();
               },
               child: Text(editing ? 'Save' : 'Add'),
@@ -2159,6 +2162,7 @@ class _PlotHistoryPageState extends State<PlotHistoryPage> {
         );
       }
 
+      if (!mounted) return;
       final shouldRestore = await showDialog<bool>(
         context: context,
         builder: (dialogContext) => AlertDialog(
@@ -2680,7 +2684,7 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
                           scrollDirection: Axis.horizontal,
                           child: DataTable(
                             columnSpacing: 22,
-                            headingRowColor: MaterialStateProperty.all(
+                            headingRowColor: WidgetStateProperty.all(
                               const Color(0xFFE3F2FD),
                             ),
                             columns: const [
