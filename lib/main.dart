@@ -660,7 +660,8 @@ class AppDatabase {
       });
 
       for (final chemical in chemicals) {
-        final multiplier = chemical.dosageUnit == 'L/acre' ? 1000.0 : 1000.0;
+        final multiplier =
+            dripDosageMultiplier(chemical.dosageUnit, chemical.unit);
         final cost = acres * chemical.dosage * multiplier * chemical.price;
         await txn.insert('drip_chemicals', {
           'drip_id': dripId,
@@ -707,7 +708,8 @@ class AppDatabase {
       );
 
       for (final chemical in chemicals) {
-        final multiplier = chemical.dosageUnit == 'L/acre' ? 1000.0 : 1000.0;
+        final multiplier =
+            dripDosageMultiplier(chemical.dosageUnit, chemical.unit);
         final cost = acres * chemical.dosage * multiplier * chemical.price;
         await txn.insert('drip_chemicals', {
           'drip_id': dripId,
@@ -1108,6 +1110,25 @@ class AppDatabase {
   }
 
 
+}
+
+// ============================================================
+// DRIP COST HELPERS
+// ============================================================
+//
+// Dosage is entered as kg/acre or L/acre. The chemical's price can be
+// saved per 'kg'/'L' OR per 'gram'/'ml'. The multiplier converts the
+// dosage into the same scale as the saved price unit:
+//   - price saved per kg or per L  -> multiplier 1 (already matching)
+//   - price saved per gram or ml (or unit not set, legacy chemicals)
+//     -> multiplier 1000 (kg/acre -> gram/acre, L/acre -> ml/acre)
+double dripDosageMultiplier(String dosageUnit, String chemicalUnit) {
+  final unit = chemicalUnit.trim().toLowerCase();
+  if (dosageUnit == 'kg/acre') {
+    return unit == 'kg' ? 1.0 : 1000.0;
+  }
+  // dosageUnit == 'L/acre'
+  return unit == 'l' ? 1.0 : 1000.0;
 }
 
 // ============================================================
@@ -2895,10 +2916,13 @@ class _AddDripPageState extends State<AddDripPage> {
       double.tryParse(_acresController.text.trim()) ?? 0;
 
   double _chemicalCost(SelectedDripChemical chemical) {
-    // L/acre is converted to ml/acre and kg/acre to gram/acre.
-    // Both conversions are x1000 because the chemical price is stored
-    // per ml or per gram respectively.
-    return _acres * chemical.dosage * 1000.0 * chemical.price;
+    // If the chemical's price is saved per kg/L (matching the dosage's
+    // kg/acre or L/acre scale) the multiplier is 1. If it's saved per
+    // gram/ml (or the unit isn't set, for older chemicals) the dosage is
+    // converted to gram/acre or ml/acre with a x1000 multiplier.
+    final multiplier =
+        dripDosageMultiplier(chemical.dosageUnit, chemical.unit);
+    return _acres * chemical.dosage * multiplier * chemical.price;
   }
 
   double get _totalCost {
@@ -2949,10 +2973,18 @@ class _AddDripPageState extends State<AddDripPage> {
           final chemicalId = row['chemical_id'] as int?;
           if (chemicalId == null) continue;
 
+          // The drip_chemicals row only stores the numeric price, not the
+          // unit it was priced in (kg/gram/L/ml) — that lives on the
+          // chemical itself, so look it up from the current chemicals list.
+          final matching = chemicals.where((c) => c['id'] == chemicalId);
+          final chemicalUnit =
+              matching.isNotEmpty ? (matching.first['unit']?.toString() ?? '') : '';
+
           final selected = SelectedDripChemical(
             id: chemicalId,
             name: row['chemical_name'].toString(),
             price: (row['price_per_unit'] as num).toDouble(),
+            unit: chemicalUnit,
             dosage: (row['dosage'] as num).toDouble(),
             dosageUnit: row['dosage_unit'].toString(),
           );
@@ -3303,26 +3335,41 @@ class _AddDripPageState extends State<AddDripPage> {
                               ],
                             ),
                             const SizedBox(height: 8),
-                            Text(
-                              'Cost: ${_formatNumber(_acres)} acres × '
-                              '${_formatNumber(chemical.dosage)} ${chemical.dosageUnit} × '
-                              '1000 × ₹${chemical.price.toStringAsFixed(2)} = '
-                              '₹${_chemicalCost(chemical).toStringAsFixed(2)}',
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: Color(0xFF0D47A1),
-                              ),
-                            ),
-                            const SizedBox(height: 6),
-                            Text(
-                              chemical.dosageUnit == 'L/acre'
-                                  ? 'L/acre is converted to ml/acre × 1000.'
-                                  : 'kg/acre is converted to gram/acre × 1000.',
-                              style: const TextStyle(
-                                color: Colors.grey,
-                                fontSize: 12,
-                              ),
-                            ),
+                            Builder(builder: (context) {
+                              final multiplier = dripDosageMultiplier(
+                                chemical.dosageUnit,
+                                chemical.unit,
+                              );
+                              final multiplierLabel =
+                                  multiplier == 1.0 ? '' : '× ${_formatNumber(multiplier)} ';
+                              return Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Cost: ${_formatNumber(_acres)} acres × '
+                                    '${_formatNumber(chemical.dosage)} ${chemical.dosageUnit} '
+                                    '$multiplierLabel× ₹${chemical.price.toStringAsFixed(2)} = '
+                                    '₹${_chemicalCost(chemical).toStringAsFixed(2)}',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: Color(0xFF0D47A1),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Text(
+                                    multiplier == 1.0
+                                        ? 'Priced per ${chemical.unit.isNotEmpty ? chemical.unit : (chemical.dosageUnit == 'L/acre' ? 'L' : 'kg')} — no unit conversion needed.'
+                                        : (chemical.dosageUnit == 'L/acre'
+                                            ? 'L/acre is converted to ml/acre × 1000 (priced per ml).'
+                                            : 'kg/acre is converted to gram/acre × 1000 (priced per gram).'),
+                                    style: const TextStyle(
+                                      color: Colors.grey,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                ],
+                              );
+                            }),
                           ],
                         ),
                       ),
