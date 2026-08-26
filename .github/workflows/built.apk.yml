@@ -19,9 +19,17 @@ jobs:
           channel: stable
           flutter-version: '3.24.5'
           cache: true
-
+          
       - name: Create Android project files
         run: flutter create --platforms=android --org com.rohitjagtap --project-name agri_spray_offline .
+
+      - name: Remove generated Flutter sample test
+        run: rm -f test/widget_test.dart
+
+      - name: Set Android SDK 35
+        run: |
+          sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 35/' android/app/build.gradle
+
 
       - name: Set Android SDK 35
         run: |
