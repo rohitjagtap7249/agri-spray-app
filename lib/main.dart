@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 
@@ -85,7 +86,7 @@ class AppDatabase {
 
   // Version 2 introduces plots, sprays and spray chemicals.
   // Existing chemical data is preserved.
-  static const int _databaseVersion = 4;
+  static const int _databaseVersion = 5;
 
   Database? _database;
 
@@ -113,7 +114,8 @@ class AppDatabase {
           CREATE TABLE IF NOT EXISTS chemicals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
-            price REAL NOT NULL DEFAULT 0
+            price REAL NOT NULL DEFAULT 0,
+            unit TEXT NOT NULL DEFAULT ''
           )
         ''');
 
@@ -138,6 +140,9 @@ class AppDatabase {
         if (oldVersion < 4) {
           await _createDripTables(db);
         }
+        if (oldVersion < 5) {
+          await _addChemicalUnitColumn(db);
+        }
       },
       onOpen: (db) async {
         // Safety net: if a previous install ever stamped the database
@@ -147,8 +152,19 @@ class AppDatabase {
         // so the app can self-heal instead of failing silently.
         await _createNewTables(db);
         await _createDripTables(db);
+        await _addChemicalUnitColumn(db);
       },
     );
+  }
+
+  Future<void> _addChemicalUnitColumn(Database db) async {
+    final columns = await db.rawQuery('PRAGMA table_info(chemicals)');
+    final hasUnit = columns.any((column) => column['name'] == 'unit');
+    if (!hasUnit) {
+      await db.execute(
+        "ALTER TABLE chemicals ADD COLUMN unit TEXT NOT NULL DEFAULT ''",
+      );
+    }
   }
 
   Future<void> _migrateChemicalNames(Database db) async {
@@ -298,15 +314,18 @@ class AppDatabase {
   Future<void> addChemical({
     required String name,
     required double price,
+    String unit = '',
   }) async {
     final db = await database;
     final clean = name.trim();
+    final cleanUnit = unit.trim();
     if (await chemicalNameExists(clean)) {
       throw StateError('Chemical already exists.');
     }
     await db.insert('chemicals', {
       'name': clean,
       'price': price,
+      'unit': cleanUnit,
     });
   }
 
@@ -314,9 +333,11 @@ class AppDatabase {
     required int id,
     required String name,
     required double price,
+    String unit = '',
   }) async {
     final db = await database;
     final clean = name.trim();
+    final cleanUnit = unit.trim();
     if (await chemicalNameExists(clean, excludeId: id)) {
       throw StateError('Chemical already exists.');
     }
@@ -325,6 +346,7 @@ class AppDatabase {
       {
         'name': clean,
         'price': price,
+        'unit': cleanUnit,
       },
       where: 'id = ?',
       whereArgs: [id],
@@ -1097,12 +1119,14 @@ class SelectedChemical {
     required this.id,
     required this.name,
     required this.price,
+    this.unit = '',
     this.dosage = 0,
   });
 
   final int id;
   final String name;
   final double price;
+  final String unit;
   double dosage;
 
   double get cost => dosage * price;
@@ -1340,118 +1364,297 @@ class _ChemicalsPageState extends State<ChemicalsPage> {
       text: chemical == null ? '' : chemical['name'].toString(),
     );
     final priceController = TextEditingController(
-      text: chemical == null
+      text: chemical == null ||
+              ((chemical['price'] as num?)?.toDouble() ?? 0) == 0
           ? ''
           : _formatNumber((chemical['price'] as num).toDouble()),
     );
     final isEditing = chemical != null;
+    String selectedUnit = chemical?['unit']?.toString() ?? '';
+    String packageSummary = '';
 
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: Text(isEditing ? 'Edit chemical' : 'Add chemical'),
-          content: SingleChildScrollView(
-            child: Column(
+    Future<void> openPriceCalculator(
+      BuildContext dialogContext,
+      void Function(void Function()) refresh,
+    ) async {
+      if (selectedUnit.isEmpty) {
+        ScaffoldMessenger.of(dialogContext).showSnackBar(
+          const SnackBar(
+            content: Text('Select a unit first to use the price calculator.'),
+          ),
+        );
+        return;
+      }
+
+      final packageSizeController = TextEditingController();
+      final packagePriceController = TextEditingController();
+
+      await showDialog<void>(
+        context: dialogContext,
+        builder: (calculatorContext) {
+          return AlertDialog(
+            title: const Text('Price calculator'),
+            content: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 TextField(
-                  controller: nameController,
-                  textCapitalization: TextCapitalization.words,
-                  decoration: const InputDecoration(
-                    labelText: 'Chemical name',
-                    prefixIcon: Icon(Icons.science),
+                  controller: packageSizeController,
+                  autofocus: true,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  decoration: InputDecoration(
+                    labelText: 'Package size ($selectedUnit)',
+                    hintText: selectedUnit == 'ml'
+                        ? 'Example: 500'
+                        : selectedUnit == 'gram'
+                            ? 'Example: 500'
+                            : 'Example: 1',
+                    prefixIcon: const Icon(Icons.inventory_2_outlined),
                   ),
                 ),
                 const SizedBox(height: 14),
                 TextField(
-                  controller: priceController,
+                  controller: packagePriceController,
                   keyboardType: const TextInputType.numberWithOptions(
                     decimal: true,
                   ),
                   decoration: const InputDecoration(
-                    labelText: 'Price per unit (₹)',
-                    hintText: 'Example: 0.65 per ml',
+                    labelText: 'Package price (₹)',
+                    hintText: 'Example: 325',
                     prefixIcon: Icon(Icons.currency_rupee),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                const Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    'Keep the price unit consistent with the dosage unit you use.',
-                    style: TextStyle(color: Colors.grey, fontSize: 12),
                   ),
                 ),
               ],
             ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () async {
-                final name = nameController.text.trim();
-                final price = double.tryParse(priceController.text.trim());
-
-                if (name.isEmpty || price == null || price < 0) {
-                  ScaffoldMessenger.of(dialogContext).showSnackBar(
-                    const SnackBar(
-                      content: Text('Enter a valid chemical name and price.'),
-                    ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(calculatorContext),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () {
+                  final size = double.tryParse(
+                    packageSizeController.text.trim(),
                   );
-                  return;
-                }
+                  final packagePrice = double.tryParse(
+                    packagePriceController.text.trim(),
+                  );
 
-                final duplicate =
-                    await AppDatabase.instance.chemicalNameExists(
-                  name,
-                  excludeId: isEditing ? chemical['id'] as int : null,
-                );
-                if (duplicate) {
-                  ScaffoldMessenger.of(dialogContext).showSnackBar(
-                    const SnackBar(
-                      content: Text(
-                        'Chemical already exists. Use a different name.',
+                  if (size == null || size <= 0 ||
+                      packagePrice == null || packagePrice < 0) {
+                    ScaffoldMessenger.of(calculatorContext).showSnackBar(
+                      const SnackBar(
+                        content: Text(
+                          'Enter a valid package size and package price.',
+                        ),
                       ),
-                    ),
-                  );
-                  return;
-                }
-
-                try {
-                  if (isEditing) {
-                    await AppDatabase.instance.updateChemical(
-                      id: chemical['id'] as int,
-                      name: name,
-                      price: price,
                     );
-                  } else {
-                    await AppDatabase.instance.addChemical(
-                      name: name,
-                      price: price,
-                    );
+                    return;
                   }
-                } on StateError {
-                  ScaffoldMessenger.of(dialogContext).showSnackBar(
-                    const SnackBar(
-                      content: Text(
-                        'Chemical already exists. Use a different name.',
+
+                  final calculated = packagePrice / size;
+                  priceController.text = _formatNumber(calculated);
+                  packageSummary =
+                      '${_formatNumber(size)} $selectedUnit for ₹${_formatNumber(packagePrice)} → '
+                      '₹${_formatNumber(calculated)} per $selectedUnit';
+                  refresh(() {});
+                  Navigator.pop(calculatorContext);
+                },
+                child: const Text('Calculate'),
+              ),
+            ],
+          );
+        },
+      );
+
+      packageSizeController.dispose();
+      packagePriceController.dispose();
+    }
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, refresh) {
+            return AlertDialog(
+              title: Text(isEditing ? 'Edit chemical' : 'Add chemical'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      controller: nameController,
+                      textCapitalization: TextCapitalization.words,
+                      decoration: const InputDecoration(
+                        labelText: 'Chemical name *',
+                        prefixIcon: Icon(Icons.science),
                       ),
                     ),
-                  );
-                  return;
-                }
+                    const SizedBox(height: 14),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: priceController,
+                            keyboardType:
+                                const TextInputType.numberWithOptions(
+                              decimal: true,
+                            ),
+                            decoration: const InputDecoration(
+                              labelText: 'Price per unit (₹)',
+                              hintText: 'Optional',
+                              prefixIcon: Icon(Icons.currency_rupee),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        SizedBox(
+                          width: 88,
+                          child: DropdownButtonFormField<String>(
+                            value: selectedUnit.isEmpty ? null : selectedUnit,
+                            decoration: const InputDecoration(
+                              labelText: 'Unit',
+                            ),
+                            items: const [
+                              DropdownMenuItem(
+                                value: 'ml',
+                                child: Text('ml'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'L',
+                                child: Text('L'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'gram',
+                                child: Text('gram'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'kg',
+                                child: Text('kg'),
+                              ),
+                            ],
+                            onChanged: (value) {
+                              refresh(() {
+                                selectedUnit = value ?? '';
+                                if (selectedUnit.isEmpty) {
+                                  packageSummary = '';
+                                }
+                              });
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    const Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        'Unit and price are optional. Choose the unit you normally use for dosage.',
+                        style: TextStyle(color: Colors.grey, fontSize: 12),
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    InkWell(
+                      borderRadius: BorderRadius.circular(10),
+                      onTap: () => openPriceCalculator(dialogContext, refresh),
+                      child: InputDecorator(
+                        decoration: const InputDecoration(
+                          labelText: 'Price Calculator (optional)',
+                          prefixIcon: Icon(Icons.calculate_outlined),
+                          suffixIcon: Icon(Icons.chevron_right),
+                        ),
+                        child: packageSummary.isEmpty
+                            ? const Text(
+                                'Tap to enter package size and price',
+                                style: TextStyle(color: Colors.grey),
+                              )
+                            : Text(
+                                packageSummary,
+                                style: const TextStyle(
+                                  color: Color(0xFF2E7D32),
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () async {
+                    final name = nameController.text.trim();
+                    final priceText = priceController.text.trim();
+                    final price = priceText.isEmpty
+                        ? 0.0
+                        : double.tryParse(priceText);
 
-                if (!mounted) return;
-                Navigator.pop(dialogContext);
-                await _loadChemicals();
-              },
-              child: Text(isEditing ? 'Save' : 'Add'),
-            ),
-          ],
+                    if (name.isEmpty || price == null || price < 0) {
+                      ScaffoldMessenger.of(dialogContext).showSnackBar(
+                        const SnackBar(
+                          content: Text('Enter a valid chemical name and price.'),
+                        ),
+                      );
+                      return;
+                    }
+
+                    final duplicate =
+                        await AppDatabase.instance.chemicalNameExists(
+                      name,
+                      excludeId: isEditing ? chemical['id'] as int : null,
+                    );
+                    if (duplicate) {
+                      ScaffoldMessenger.of(dialogContext).showSnackBar(
+                        const SnackBar(
+                          content: Text(
+                            'Chemical already exists. Use a different name.',
+                          ),
+                        ),
+                      );
+                      return;
+                    }
+
+                    try {
+                      if (isEditing) {
+                        await AppDatabase.instance.updateChemical(
+                          id: chemical['id'] as int,
+                          name: name,
+                          price: price,
+                          unit: selectedUnit,
+                        );
+                      } else {
+                        await AppDatabase.instance.addChemical(
+                          name: name,
+                          price: price,
+                          unit: selectedUnit,
+                        );
+                      }
+                    } on StateError {
+                      ScaffoldMessenger.of(dialogContext).showSnackBar(
+                        const SnackBar(
+                          content: Text(
+                            'Chemical already exists. Use a different name.',
+                          ),
+                        ),
+                      );
+                      return;
+                    }
+
+                    if (!mounted) return;
+                    Navigator.pop(dialogContext);
+                    await _loadChemicals();
+                  },
+                  child: Text(isEditing ? 'Save' : 'Add'),
+                ),
+              ],
+            );
+          },
         );
       },
     );
@@ -1495,14 +1698,14 @@ class _ChemicalsPageState extends State<ChemicalsPage> {
       final chemicals = await AppDatabase.instance.getChemicals();
       final payload = {
         'format': 'FarmBook chemical database',
-        'version': 1,
+        'version': 2,
         'exported_at': DateTime.now().toIso8601String(),
         'chemicals': chemicals
             .map(
               (c) => {
                 'name': c['name'].toString(),
                 'price_per_unit': (c['price'] as num).toDouble(),
-                'unit': 'per unit',
+                'unit': c['unit']?.toString() ?? '',
               },
             )
             .toList(),
@@ -1512,16 +1715,16 @@ class _ChemicalsPageState extends State<ChemicalsPage> {
       final fileName =
           'FarmBook_chemicals_${DateTime.now().millisecondsSinceEpoch}.json';
 
+      final bytes = Uint8List.fromList(utf8.encode(jsonText));
       final path = await FilePicker.platform.saveFile(
         dialogTitle: 'Export Chemical Database',
         fileName: fileName,
+        bytes: bytes,
         type: FileType.custom,
         allowedExtensions: ['json'],
       );
 
       if (path == null) return;
-
-      await File(path).writeAsString(jsonText, flush: true);
 
       if (!mounted) return;
       await Share.shareXFiles(
@@ -1571,9 +1774,15 @@ class _ChemicalsPageState extends State<ChemicalsPage> {
 
         final name = item['name']?.toString().trim() ?? '';
         final priceValue = item['price_per_unit'] ?? item['price'];
-        final price = priceValue is num
-            ? priceValue.toDouble()
-            : double.tryParse(priceValue?.toString() ?? '');
+        final price = priceValue == null || priceValue.toString().trim().isEmpty
+            ? 0.0
+            : priceValue is num
+                ? priceValue.toDouble()
+                : double.tryParse(priceValue.toString());
+        final importedUnit = item['unit']?.toString().trim() ?? '';
+        final unit = const ['ml', 'L', 'gram', 'kg'].contains(importedUnit)
+            ? importedUnit
+            : '';
 
         if (name.isEmpty || price == null || price < 0) {
           skipped++;
@@ -1588,6 +1797,7 @@ class _ChemicalsPageState extends State<ChemicalsPage> {
           await AppDatabase.instance.addChemical(
             name: name,
             price: price,
+            unit: unit,
           );
           added++;
         } else {
@@ -1595,6 +1805,7 @@ class _ChemicalsPageState extends State<ChemicalsPage> {
             id: existing.first['id'] as int,
             name: existing.first['name'].toString(),
             price: price,
+            unit: unit,
           );
           updated++;
         }
@@ -1699,7 +1910,11 @@ class _ChemicalsPageState extends State<ChemicalsPage> {
                             style: const TextStyle(fontWeight: FontWeight.bold),
                           ),
                           subtitle: Text(
-                            '₹${price.toStringAsFixed(2)} per unit',
+                            price > 0
+                                ? '₹${price.toStringAsFixed(2)}${chemical['unit']?.toString().isNotEmpty == true ? ' / ${chemical['unit']}' : ' per unit'}'
+                                : (chemical['unit']?.toString().isNotEmpty == true
+                                    ? 'Unit: ${chemical['unit']}'
+                                    : 'Price not set'),
                           ),
                           trailing: PopupMenuButton<String>(
                             onSelected: (value) {
@@ -1893,16 +2108,16 @@ class _PlotHistoryPageState extends State<PlotHistoryPage> {
       final fileName =
           'FarmBook_history_${DateTime.now().millisecondsSinceEpoch}.json';
 
+      final bytes = Uint8List.fromList(utf8.encode(jsonText));
       final path = await FilePicker.platform.saveFile(
         dialogTitle: 'Backup Spray History',
         fileName: fileName,
+        bytes: bytes,
         type: FileType.custom,
         allowedExtensions: ['json'],
       );
 
       if (path == null) return;
-
-      await File(path).writeAsString(jsonText, flush: true);
 
       if (!mounted) return;
       await Share.shareXFiles(
@@ -2980,7 +3195,11 @@ class _AddDripPageState extends State<AddDripPage> {
                             ),
                             title: Text(chemical['name'].toString()),
                             subtitle: Text(
-                              '₹${(chemical['price'] as num).toDouble().toStringAsFixed(2)} per unit',
+                              (chemical['price'] as num).toDouble() > 0
+                                  ? '₹${(chemical['price'] as num).toDouble().toStringAsFixed(2)}${chemical['unit']?.toString().isNotEmpty == true ? ' / ${chemical['unit']}' : ' per unit'}'
+                                  : (chemical['unit']?.toString().isNotEmpty == true
+                                      ? 'Unit: ${chemical['unit']}'
+                                      : 'Price not set'),
                             ),
                             enabled: !selected,
                             onTap: selected
@@ -3029,7 +3248,7 @@ class _AddDripPageState extends State<AddDripPage> {
                               ],
                             ),
                             Text(
-                              'Saved price: ₹${chemical.price.toStringAsFixed(2)} per unit',
+                              'Saved price: ₹${chemical.price.toStringAsFixed(2)}${chemical.unit.isNotEmpty ? ' / ${chemical.unit}' : ' per unit'}',
                               style: const TextStyle(color: Colors.grey),
                             ),
                             const SizedBox(height: 10),
@@ -3305,10 +3524,18 @@ class _AddSprayPageState extends State<AddSprayPage> {
           continue;
         }
 
+        final matchingChemical = chemicals.where(
+          (chemical) => chemical['id'] == chemicalId,
+        );
+        final savedUnit = matchingChemical.isNotEmpty
+            ? matchingChemical.first['unit']?.toString() ?? ''
+            : '';
+
         final selected = SelectedChemical(
           id: chemicalId,
           name: row['chemical_name'].toString(),
           price: (row['price_per_unit'] as num).toDouble(),
+          unit: savedUnit,
           dosage: (row['dosage'] as num).toDouble(),
         );
 
@@ -3395,6 +3622,7 @@ class _AddSprayPageState extends State<AddSprayPage> {
       id: id,
       name: row['name'].toString(),
       price: (row['price'] as num).toDouble(),
+      unit: row['unit']?.toString() ?? '',
     );
 
     setState(() {
@@ -3630,7 +3858,11 @@ class _AddSprayPageState extends State<AddSprayPage> {
                               chemical['name'].toString(),
                             ),
                             subtitle: Text(
-                              '₹${(chemical['price'] as num).toDouble().toStringAsFixed(2)} per unit',
+                              (chemical['price'] as num).toDouble() > 0
+                                  ? '₹${(chemical['price'] as num).toDouble().toStringAsFixed(2)}${chemical['unit']?.toString().isNotEmpty == true ? ' / ${chemical['unit']}' : ' per unit'}'
+                                  : (chemical['unit']?.toString().isNotEmpty == true
+                                      ? 'Unit: ${chemical['unit']}'
+                                      : 'Price not set'),
                             ),
                             enabled: !selected,
                             onTap: selected
@@ -3696,7 +3928,7 @@ class _AddSprayPageState extends State<AddSprayPage> {
                                 ],
                               ),
                               Text(
-                                'Saved price: ₹${chemical.price.toStringAsFixed(2)} per unit',
+                                'Saved price: ₹${chemical.price.toStringAsFixed(2)}${chemical.unit.isNotEmpty ? ' / ${chemical.unit}' : ' per unit'}',
                                 style: const TextStyle(
                                   color: Colors.grey,
                                 ),
