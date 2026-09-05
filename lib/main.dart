@@ -2172,7 +2172,7 @@ class _ChemicalsPageState extends State<ChemicalsPage> {
                       ),
                     ),
                   ],
-
+                ),
     );
   }
 }
