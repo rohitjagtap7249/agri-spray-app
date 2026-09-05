@@ -86,7 +86,7 @@ class AppDatabase {
 
   // Version 2 introduces plots, sprays and spray chemicals.
   // Existing chemical data is preserved.
-  static const int _databaseVersion = 5;
+  static const int _databaseVersion = 6;
 
   Database? _database;
 
@@ -121,6 +121,7 @@ class AppDatabase {
 
         await _createNewTables(db);
         await _createDripTables(db);
+        await _createFinanceTables(db);
         await db.execute('''
           CREATE UNIQUE INDEX IF NOT EXISTS idx_chemicals_name_ci
           ON chemicals(name COLLATE NOCASE)
@@ -143,6 +144,9 @@ class AppDatabase {
         if (oldVersion < 5) {
           await _addChemicalUnitColumn(db);
         }
+        if (oldVersion < 6) {
+          await _createFinanceTables(db);
+        }
       },
       onOpen: (db) async {
         // Safety net: if a previous install ever stamped the database
@@ -152,6 +156,7 @@ class AppDatabase {
         // so the app can self-heal instead of failing silently.
         await _createNewTables(db);
         await _createDripTables(db);
+        await _createFinanceTables(db);
         await _addChemicalUnitColumn(db);
       },
     );
@@ -281,6 +286,75 @@ class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_drip_chemicals_drip_id
       ON drip_chemicals(drip_id)
     ''');
+  }
+
+  Future<void> _createFinanceTables(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS labour_records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, plot_id INTEGER NOT NULL,
+        labour_date TEXT NOT NULL, work_type TEXT NOT NULL,
+        worker_count REAL NOT NULL DEFAULT 0, rate REAL NOT NULL DEFAULT 0,
+        total_cost REAL NOT NULL, notes TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS other_expenses (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, plot_id INTEGER NOT NULL,
+        expense_date TEXT NOT NULL, category TEXT NOT NULL, description TEXT NOT NULL,
+        amount REAL NOT NULL, notes TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS earnings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, plot_id INTEGER NOT NULL,
+        earning_date TEXT NOT NULL, description TEXT NOT NULL,
+        quantity REAL NOT NULL DEFAULT 0, unit TEXT NOT NULL DEFAULT '',
+        price REAL NOT NULL DEFAULT 0, amount REAL NOT NULL,
+        notes TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
+      )
+    ''');
+    await db.execute('''CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)''');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_labour_plot_id ON labour_records(plot_id)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_other_plot_id ON other_expenses(plot_id)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_earnings_plot_id ON earnings(plot_id)');
+  }
+
+  Future<bool> directLastPageEnabled() async {
+    final rows=await (await database).query('app_settings',where:'key=?',whereArgs:['direct_last_page'],limit:1);
+    return rows.isNotEmpty && rows.first['value']=='1';
+  }
+  Future<void> setDirectLastPageEnabled(bool enabled) async {
+    await (await database).insert('app_settings',{'key':'direct_last_page','value':enabled?'1':'0'},conflictAlgorithm:ConflictAlgorithm.replace);
+  }
+  Future<String?> getLastPage(int plotId) async {
+    final rows=await (await database).query('app_settings',where:'key=?',whereArgs:['last_page_$plotId'],limit:1);
+    return rows.isEmpty?null:rows.first['value']?.toString();
+  }
+  Future<void> setLastPage(int plotId,String page) async {
+    await (await database).insert('app_settings',{'key':'last_page_$plotId','value':page},conflictAlgorithm:ConflictAlgorithm.replace);
+  }
+  Future<List<Map<String,dynamic>>> getLabour(int plotId) async => (await database).query('labour_records',where:'plot_id=?',whereArgs:[plotId],orderBy:'labour_date DESC,id DESC');
+  Future<int> addLabour({required int plotId,required DateTime date,required String workType,required double workerCount,required double rate,required double totalCost,required String notes}) async => (await database).insert('labour_records',{'plot_id':plotId,'labour_date':date.toIso8601String(),'work_type':workType.trim(),'worker_count':workerCount,'rate':rate,'total_cost':totalCost,'notes':notes.trim(),'created_at':DateTime.now().toIso8601String()});
+  Future<void> updateLabour({required int id,required DateTime date,required String workType,required double workerCount,required double rate,required double totalCost,required String notes}) async => (await database).update('labour_records',{'labour_date':date.toIso8601String(),'work_type':workType.trim(),'worker_count':workerCount,'rate':rate,'total_cost':totalCost,'notes':notes.trim()},where:'id=?',whereArgs:[id]);
+  Future<void> deleteLabour(int id) async => (await database).delete('labour_records',where:'id=?',whereArgs:[id]);
+  Future<List<Map<String,dynamic>>> getOtherExpenses(int plotId) async => (await database).query('other_expenses',where:'plot_id=?',whereArgs:[plotId],orderBy:'expense_date DESC,id DESC');
+  Future<int> addOtherExpense({required int plotId,required DateTime date,required String category,required String description,required double amount,required String notes}) async => (await database).insert('other_expenses',{'plot_id':plotId,'expense_date':date.toIso8601String(),'category':category.trim(),'description':description.trim(),'amount':amount,'notes':notes.trim(),'created_at':DateTime.now().toIso8601String()});
+  Future<void> updateOtherExpense({required int id,required DateTime date,required String category,required String description,required double amount,required String notes}) async => (await database).update('other_expenses',{'expense_date':date.toIso8601String(),'category':category.trim(),'description':description.trim(),'amount':amount,'notes':notes.trim()},where:'id=?',whereArgs:[id]);
+  Future<void> deleteOtherExpense(int id) async => (await database).delete('other_expenses',where:'id=?',whereArgs:[id]);
+  Future<List<Map<String,dynamic>>> getEarnings(int plotId) async => (await database).query('earnings',where:'plot_id=?',whereArgs:[plotId],orderBy:'earning_date DESC,id DESC');
+  Future<int> addEarning({required int plotId,required DateTime date,required String description,required double quantity,required String unit,required double price,required double amount,required String notes}) async => (await database).insert('earnings',{'plot_id':plotId,'earning_date':date.toIso8601String(),'description':description.trim(),'quantity':quantity,'unit':unit.trim(),'price':price,'amount':amount,'notes':notes.trim(),'created_at':DateTime.now().toIso8601String()});
+  Future<void> updateEarning({required int id,required DateTime date,required String description,required double quantity,required String unit,required double price,required double amount,required String notes}) async => (await database).update('earnings',{'earning_date':date.toIso8601String(),'description':description.trim(),'quantity':quantity,'unit':unit.trim(),'price':price,'amount':amount,'notes':notes.trim()},where:'id=?',whereArgs:[id]);
+  Future<void> deleteEarning(int id) async => (await database).delete('earnings',where:'id=?',whereArgs:[id]);
+  Future<Map<String,double>> plotTotals(int plotId) async {
+    final sprays=await getSpraysForPlot(plotId), drips=await getDripApplicationsForPlot(plotId);
+    final db=await database; final l=await db.query('labour_records',where:'plot_id=?',whereArgs:[plotId]); final o=await db.query('other_expenses',where:'plot_id=?',whereArgs:[plotId]); final e=await db.query('earnings',where:'plot_id=?',whereArgs:[plotId]);
+    double sum(List<Map<String,dynamic>> x,String k)=>x.fold(0.0,(v,r)=>v+(r[k] as num).toDouble());
+    final spray=sprays.fold(0.0,(v,r)=>v+(r['total_cost'] as num).toDouble()), drip=drips.fold(0.0,(v,r)=>v+(r['total_cost'] as num).toDouble()), labour=sum(l,'total_cost'), other=sum(o,'amount'), earned=sum(e,'amount'); final expense=spray+drip+labour+other;
+    return {'spray':spray,'drip':drip,'labour':labour,'other':other,'expense':expense,'earnings':earned,'profit':earned-expense};
+  }
+  Future<Map<String,double>> allPlotTotals() async {
+    double spray=0,drip=0,labour=0,other=0,earned=0; for(final p in await getPlots()){final t=await plotTotals(p['id'] as int);spray+=t['spray']!;drip+=t['drip']!;labour+=t['labour']!;other+=t['other']!;earned+=t['earnings']!;} final expense=spray+drip+labour+other; return {'spray':spray,'drip':drip,'labour':labour,'other':other,'expense':expense,'earnings':earned,'profit':earned-expense};
   }
 
   // ------------------------------------------------------------
@@ -440,6 +514,10 @@ class AppDatabase {
         whereArgs: [id],
       );
 
+      await txn.delete('labour_records', where: 'plot_id = ?', whereArgs: [id]);
+      await txn.delete('other_expenses', where: 'plot_id = ?', whereArgs: [id]);
+      await txn.delete('earnings', where: 'plot_id = ?', whereArgs: [id]);
+      await txn.delete('app_settings', where: 'key = ?', whereArgs: ['last_page_$id']);
       await txn.delete(
         'plots',
         where: 'id = ?',
@@ -745,6 +823,22 @@ class AppDatabase {
   // HISTORY BACKUP / RESTORE
   // ------------------------------------------------------------
 
+  Future<Map<String, dynamic>> exportPlot(int plotId) async {
+    final db=await database;
+    final plots=await db.query('plots',where:'id=?',whereArgs:[plotId]);
+    if(plots.isEmpty) throw StateError('Plot not found.');
+    final sprays=await db.query('sprays',where:'plot_id=?',whereArgs:[plotId]);
+    final sprayIds=sprays.map((r)=>r['id']).toList();
+    final drips=await db.query('drip_applications',where:'plot_id=?',whereArgs:[plotId]);
+    final dripIds=drips.map((r)=>r['id']).toList();
+    final sprayChemicals=<Map<String,dynamic>>[]; for(final id in sprayIds){ sprayChemicals.addAll(await db.query('spray_chemicals',where:'spray_id=?',whereArgs:[id])); }
+    final dripChemicals=<Map<String,dynamic>>[]; for(final id in dripIds){ dripChemicals.addAll(await db.query('drip_chemicals',where:'drip_id=?',whereArgs:[id])); }
+    final labour=await db.query('labour_records',where:'plot_id=?',whereArgs:[plotId]);
+    final other=await db.query('other_expenses',where:'plot_id=?',whereArgs:[plotId]);
+    final earnings=await db.query('earnings',where:'plot_id=?',whereArgs:[plotId]);
+    return {'format':'FarmBook plot backup','version':2,'exported_at':DateTime.now().toIso8601String(),'plots':plots.map(Map<String,dynamic>.from).toList(),'sprays':sprays.map(Map<String,dynamic>.from).toList(),'spray_chemicals':sprayChemicals,'drip_applications':drips.map(Map<String,dynamic>.from).toList(),'drip_chemicals':dripChemicals,'labour_records':labour.map(Map<String,dynamic>.from).toList(),'other_expenses':other.map(Map<String,dynamic>.from).toList(),'earnings':earnings.map(Map<String,dynamic>.from).toList()};
+  }
+
   Future<Map<String, dynamic>> exportHistory() async {
     final db = await database;
 
@@ -753,10 +847,14 @@ class AppDatabase {
     final sprayChemicals = await db.query('spray_chemicals', orderBy: 'id ASC');
     final drips = await db.query('drip_applications', orderBy: 'id ASC');
     final dripChemicals = await db.query('drip_chemicals', orderBy: 'id ASC');
+    final labour = await db.query('labour_records', orderBy: 'id ASC');
+    final other = await db.query('other_expenses', orderBy: 'id ASC');
+    final earnings = await db.query('earnings', orderBy: 'id ASC');
 
     return {
-      'format': 'FarmBook spray history backup',
-      'version': 1,
+      'format': 'FarmBook plot backup',
+      'legacy_format': 'FarmBook spray history backup',
+      'version': 2,
       'exported_at': DateTime.now().toIso8601String(),
       'plots': plots.map(Map<String, dynamic>.from).toList(),
       'sprays': sprays.map(Map<String, dynamic>.from).toList(),
@@ -765,6 +863,9 @@ class AppDatabase {
       'drip_applications': drips.map(Map<String, dynamic>.from).toList(),
       'drip_chemicals':
           dripChemicals.map(Map<String, dynamic>.from).toList(),
+      'labour_records': labour.map(Map<String, dynamic>.from).toList(),
+      'other_expenses': other.map(Map<String, dynamic>.from).toList(),
+      'earnings': earnings.map(Map<String, dynamic>.from).toList(),
     };
   }
 
@@ -778,6 +879,9 @@ class AppDatabase {
     final rawSprayChemicals = payload['spray_chemicals'];
     final rawDrips = payload['drip_applications'];
     final rawDripChemicals = payload['drip_chemicals'];
+    final rawLabour = payload['labour_records'] is List ? payload['labour_records'] as List : const [];
+    final rawOther = payload['other_expenses'] is List ? payload['other_expenses'] as List : const [];
+    final rawEarnings = payload['earnings'] is List ? payload['earnings'] as List : const [];
 
     if (rawPlots is! List ||
         rawSprays is! List ||
@@ -792,6 +896,9 @@ class AppDatabase {
     int plotsAdded = 0;
     int spraysAdded = 0;
     int dripsAdded = 0;
+    int labourAdded = 0;
+    int otherAdded = 0;
+    int earningsAdded = 0;
     int skipped = 0;
 
     await db.transaction((txn) async {
@@ -999,12 +1106,43 @@ class AppDatabase {
         }
         dripsAdded++;
       }
+
+      for (final item in rawLabour) {
+        if (item is! Map) { skipped++; continue; }
+        final oldPlotId=_backupInt(item['plot_id']); final plotId=oldPlotId==null?null:plotIdMap[oldPlotId];
+        final date=item['labour_date']?.toString()??''; final work=item['work_type']?.toString()??''; final amount=_backupDouble(item['total_cost']);
+        if(plotId==null||date.isEmpty||work.isEmpty||amount==null){skipped++;continue;}
+        final exists=await txn.query('labour_records',where:'plot_id=? AND labour_date=? AND work_type=? AND total_cost=?',whereArgs:[plotId,date,work,amount],limit:1);
+        if(exists.isNotEmpty){skipped++;continue;}
+        await txn.insert('labour_records',{'plot_id':plotId,'labour_date':date,'work_type':work,'worker_count':_backupDouble(item['worker_count'])??0,'rate':_backupDouble(item['rate'])??0,'total_cost':amount,'notes':item['notes']?.toString()??'','created_at':item['created_at']?.toString()??DateTime.now().toIso8601String()}); labourAdded++;
+      }
+      for (final item in rawOther) {
+        if (item is! Map) { skipped++; continue; }
+        final oldPlotId=_backupInt(item['plot_id']); final plotId=oldPlotId==null?null:plotIdMap[oldPlotId];
+        final date=item['expense_date']?.toString()??''; final desc=item['description']?.toString()??''; final amount=_backupDouble(item['amount']);
+        if(plotId==null||date.isEmpty||desc.isEmpty||amount==null){skipped++;continue;}
+        final exists=await txn.query('other_expenses',where:'plot_id=? AND expense_date=? AND description=? AND amount=?',whereArgs:[plotId,date,desc,amount],limit:1);
+        if(exists.isNotEmpty){skipped++;continue;}
+        await txn.insert('other_expenses',{'plot_id':plotId,'expense_date':date,'category':item['category']?.toString()??'Other','description':desc,'amount':amount,'notes':item['notes']?.toString()??'','created_at':item['created_at']?.toString()??DateTime.now().toIso8601String()}); otherAdded++;
+      }
+      for (final item in rawEarnings) {
+        if (item is! Map) { skipped++; continue; }
+        final oldPlotId=_backupInt(item['plot_id']); final plotId=oldPlotId==null?null:plotIdMap[oldPlotId];
+        final date=item['earning_date']?.toString()??''; final desc=item['description']?.toString()??''; final amount=_backupDouble(item['amount']);
+        if(plotId==null||date.isEmpty||desc.isEmpty||amount==null){skipped++;continue;}
+        final exists=await txn.query('earnings',where:'plot_id=? AND earning_date=? AND description=? AND amount=?',whereArgs:[plotId,date,desc,amount],limit:1);
+        if(exists.isNotEmpty){skipped++;continue;}
+        await txn.insert('earnings',{'plot_id':plotId,'earning_date':date,'description':desc,'quantity':_backupDouble(item['quantity'])??0,'unit':item['unit']?.toString()??'','price':_backupDouble(item['price'])??0,'amount':amount,'notes':item['notes']?.toString()??'','created_at':item['created_at']?.toString()??DateTime.now().toIso8601String()}); earningsAdded++;
+      }
     });
 
     return {
       'plots_added': plotsAdded,
       'sprays_added': spraysAdded,
       'drips_added': dripsAdded,
+      'labour_added': labourAdded,
+      'other_added': otherAdded,
+      'earnings_added': earningsAdded,
       'skipped': skipped,
     };
   }
@@ -1116,18 +1254,31 @@ class AppDatabase {
 // DRIP COST HELPERS
 // ============================================================
 //
-// Dosage is entered as kg/acre or L/acre. The chemical's price can be
-// saved per 'kg'/'L' OR per 'gram'/'ml'. The multiplier converts the
-// dosage into the same scale as the saved price unit:
-//   - price saved per kg or per L  -> multiplier 1 (already matching)
-//   - price saved per gram or ml (or unit not set, legacy chemicals)
-//     -> multiplier 1000 (kg/acre -> gram/acre, L/acre -> ml/acre)
+// The chemical database is the single source of truth for the
+// chemical's unit. Drip dosage is therefore automatic:
+//   ml or L    -> L/acre
+//   gram or kg -> kg/acre
+//
+// Legacy chemicals with no unit keep the old L/acre default until
+// their unit is filled in from the Chemical Database.
+String dripDosageUnitForChemical(String chemicalUnit, {String legacyUnit = 'L/acre'}) {
+  switch (chemicalUnit.trim().toLowerCase()) {
+    case 'ml':
+    case 'l':
+      return 'L/acre';
+    case 'gram':
+    case 'kg':
+      return 'kg/acre';
+    default:
+      return legacyUnit;
+  }
+}
+
 double dripDosageMultiplier(String dosageUnit, String chemicalUnit) {
   final unit = chemicalUnit.trim().toLowerCase();
   if (dosageUnit == 'kg/acre') {
     return unit == 'kg' ? 1.0 : 1000.0;
   }
-  // dosageUnit == 'L/acre'
   return unit == 'l' ? 1.0 : 1000.0;
 }
 
@@ -1354,13 +1505,22 @@ class ChemicalsPage extends StatefulWidget {
 }
 
 class _ChemicalsPageState extends State<ChemicalsPage> {
+  final TextEditingController _searchController = TextEditingController();
   List<Map<String, dynamic>> _chemicals = [];
+  List<Map<String, dynamic>> _filteredChemicals = [];
   bool _loading = true;
 
   @override
   void initState() {
     super.initState();
+    _searchController.addListener(_filterChemicals);
     _loadChemicals();
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadChemicals() async {
@@ -1369,6 +1529,7 @@ class _ChemicalsPageState extends State<ChemicalsPage> {
       if (!mounted) return;
       setState(() {
         _chemicals = chemicals;
+        _filteredChemicals = chemicals;
         _loading = false;
       });
     } catch (e) {
@@ -1378,6 +1539,21 @@ class _ChemicalsPageState extends State<ChemicalsPage> {
         SnackBar(content: Text('Could not load chemicals: $e')),
       );
     }
+  }
+
+  void _filterChemicals() {
+    final query = _searchController.text.trim().toLowerCase();
+    if (!mounted) return;
+
+    setState(() {
+      _filteredChemicals = query.isEmpty
+          ? List.of(_chemicals)
+          : _chemicals.where((chemical) {
+              final name = chemical['name'].toString().toLowerCase();
+              final unit = chemical['unit']?.toString().toLowerCase() ?? '';
+              return name.contains(query) || unit.contains(query);
+            }).toList();
+    });
   }
 
   Future<void> _showChemicalDialog({
@@ -1538,7 +1714,7 @@ class _ChemicalsPageState extends State<ChemicalsPage> {
                           child: DropdownButtonFormField<String>(
                             value: selectedUnit.isEmpty ? null : selectedUnit,
                             decoration: const InputDecoration(
-                              labelText: 'Unit',
+                              labelText: 'Unit *',
                             ),
                             items: const [
                               DropdownMenuItem(
@@ -1574,7 +1750,7 @@ class _ChemicalsPageState extends State<ChemicalsPage> {
                     const Align(
                       alignment: Alignment.centerLeft,
                       child: Text(
-                        'Unit and price are optional. Choose the unit you normally use for dosage.',
+                        'Unit is used by Spray and Drip. In Drip, ml/L automatically use L/acre, while gram/kg automatically use kg/acre.',
                         style: TextStyle(color: Colors.grey, fontSize: 12),
                       ),
                     ),
@@ -1618,10 +1794,10 @@ class _ChemicalsPageState extends State<ChemicalsPage> {
                         ? 0.0
                         : double.tryParse(priceText);
 
-                    if (name.isEmpty || price == null || price < 0) {
+                    if (name.isEmpty || price == null || price < 0 || selectedUnit.isEmpty) {
                       ScaffoldMessenger.of(dialogContext).showSnackBar(
                         const SnackBar(
-                          content: Text('Enter a valid chemical name and price.'),
+                          content: Text('Enter a valid chemical name, price and unit.'),
                         ),
                       );
                       return;
@@ -1911,61 +2087,92 @@ class _ChemicalsPageState extends State<ChemicalsPage> {
                     ),
                   ),
                 )
-              : RefreshIndicator(
-                  onRefresh: _loadChemicals,
-                  child: ListView.separated(
-                    padding: const EdgeInsets.fromLTRB(12, 12, 12, 100),
-                    itemCount: _chemicals.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 6),
-                    itemBuilder: (context, index) {
-                      final chemical = _chemicals[index];
-                      final name = chemical['name'].toString();
-                      final price = (chemical['price'] as num).toDouble();
-
-                      return Card(
-                        child: ListTile(
-                          leading: const CircleAvatar(
-                            backgroundColor: Color(0xFFE3F2FD),
-                            child: Icon(
-                              Icons.science,
-                              color: Color(0xFF0D47A1),
-                            ),
-                          ),
-                          title: Text(
-                            name,
-                            style: const TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                          subtitle: Text(
-                            price > 0
-                                ? '₹${price.toStringAsFixed(2)}${chemical['unit']?.toString().isNotEmpty == true ? ' / ${chemical['unit']}' : ' per unit'}'
-                                : (chemical['unit']?.toString().isNotEmpty == true
-                                    ? 'Unit: ${chemical['unit']}'
-                                    : 'Price not set'),
-                          ),
-                          trailing: PopupMenuButton<String>(
-                            onSelected: (value) {
-                              if (value == 'edit') {
-                                _showChemicalDialog(chemical: chemical);
-                              } else if (value == 'delete') {
-                                _deleteChemical(chemical);
-                              }
-                            },
-                            itemBuilder: (_) => const [
-                              PopupMenuItem(
-                                value: 'edit',
-                                child: Text('Edit'),
-                              ),
-                              PopupMenuItem(
-                                value: 'delete',
-                                child: Text('Delete'),
-                              ),
-                            ],
-                          ),
+              : Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
+                      child: TextField(
+                        controller: _searchController,
+                        decoration: InputDecoration(
+                          labelText: 'Search chemicals',
+                          hintText: 'Search by name or unit',
+                          prefixIcon: const Icon(Icons.search),
+                          suffixIcon: _searchController.text.isEmpty
+                              ? null
+                              : IconButton(
+                                  onPressed: _searchController.clear,
+                                  icon: const Icon(Icons.clear),
+                                ),
                         ),
-                      );
-                    },
-                  ),
-                ),
+                      ),
+                    ),
+                    Expanded(
+                      child: RefreshIndicator(
+                        onRefresh: _loadChemicals,
+                        child: _filteredChemicals.isEmpty
+                            ? ListView(
+                                physics: const AlwaysScrollableScrollPhysics(),
+                                padding: const EdgeInsets.all(30),
+                                children: const [
+                                  Center(child: Text('No matching chemicals.')),
+                                ],
+                              )
+                            : ListView.separated(
+                                padding: const EdgeInsets.fromLTRB(12, 6, 12, 100),
+                                itemCount: _filteredChemicals.length,
+                                separatorBuilder: (_, __) => const SizedBox(height: 6),
+                                itemBuilder: (context, index) {
+                                  final chemical = _filteredChemicals[index];
+                                  final name = chemical['name'].toString();
+                                  final price = (chemical['price'] as num).toDouble();
+
+                                  return Card(
+                                    child: ListTile(
+                                      leading: const CircleAvatar(
+                                        backgroundColor: Color(0xFFE3F2FD),
+                                        child: Icon(
+                                          Icons.science,
+                                          color: Color(0xFF0D47A1),
+                                        ),
+                                      ),
+                                      title: Text(
+                                        name,
+                                        style: const TextStyle(fontWeight: FontWeight.bold),
+                                      ),
+                                      subtitle: Text(
+                                        price > 0
+                                            ? '₹${price.toStringAsFixed(2)}${chemical['unit']?.toString().isNotEmpty == true ? ' / ${chemical['unit']}' : ' per unit'}'
+                                            : (chemical['unit']?.toString().isNotEmpty == true
+                                                ? 'Unit: ${chemical['unit']}'
+                                                : 'Unit not set'),
+                                      ),
+                                      trailing: PopupMenuButton<String>(
+                                        onSelected: (value) {
+                                          if (value == 'edit') {
+                                            _showChemicalDialog(chemical: chemical);
+                                          } else if (value == 'delete') {
+                                            _deleteChemical(chemical);
+                                          }
+                                        },
+                                        itemBuilder: (_) => const [
+                                          PopupMenuItem(
+                                            value: 'edit',
+                                            child: Text('Edit'),
+                                          ),
+                                          PopupMenuItem(
+                                            value: 'delete',
+                                            child: Text('Delete'),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
+                      ),
+                    ),
+                  ],
+
     );
   }
 }
@@ -2136,7 +2343,7 @@ class _PlotHistoryPageState extends State<PlotHistoryPage> {
 
       final bytes = Uint8List.fromList(utf8.encode(jsonText));
       final path = await FilePicker.platform.saveFile(
-        dialogTitle: 'Backup Spray History',
+        dialogTitle: 'Backup FarmBook Plot Data',
         fileName: fileName,
         bytes: bytes,
         type: FileType.custom,
@@ -2148,7 +2355,7 @@ class _PlotHistoryPageState extends State<PlotHistoryPage> {
       if (!mounted) return;
       await Share.shareXFiles(
         [XFile(path)],
-        text: 'FarmBook spray history backup',
+        text: 'FarmBook plot backup',
       );
     } catch (e) {
       if (!mounted) return;
@@ -2176,10 +2383,11 @@ class _PlotHistoryPageState extends State<PlotHistoryPage> {
         throw const FormatException('Invalid FarmBook history backup.');
       }
 
-      if (decoded['format']?.toString() != 'FarmBook spray history backup' &&
+      if (decoded['format']?.toString() != 'FarmBook plot backup' &&
+          decoded['format']?.toString() != 'FarmBook spray history backup' &&
           decoded['format']?.toString() != 'SprayBook spray history backup') {
         throw const FormatException(
-          'This file is not a FarmBook spray history backup.',
+          'This file is not a FarmBook backup.',
         );
       }
 
@@ -2216,12 +2424,15 @@ class _PlotHistoryPageState extends State<PlotHistoryPage> {
       final spraysAdded = resultCounts['sprays_added'] ?? 0;
       final dripsAdded = resultCounts['drips_added'] ?? 0;
       final skipped = resultCounts['skipped'] ?? 0;
+      final labourAdded = resultCounts['labour_added'] ?? 0;
+      final otherAdded = resultCounts['other_added'] ?? 0;
+      final earningsAdded = resultCounts['earnings_added'] ?? 0;
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'Restore complete: $plotsAdded plots, $spraysAdded sprays, '
-            '$dripsAdded drips added${skipped == 0 ? '' : ', $skipped skipped'}.',
+            'Restore complete: $plotsAdded plots, $spraysAdded sprays, $dripsAdded drips, '
+            '$labourAdded labour, $otherAdded expenses, $earningsAdded earnings added${skipped == 0 ? '' : ', $skipped skipped'}.',
           ),
         ),
       );
@@ -2271,26 +2482,26 @@ class _PlotHistoryPageState extends State<PlotHistoryPage> {
   }
 
   Future<void> _openPlot(Map<String, dynamic> plot) async {
-    await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => PlotSpraysPage(
-          plotId: plot['id'] as int,
-          plotTitle: plot['title'].toString(),
-          plotName: plot['plot_name'].toString(),
-          cropVariety: plot['crop_variety'].toString(),
-        ),
-      ),
-    );
-
-    await _loadPlots();
+    final id=plot['id'] as int; final direct=await AppDatabase.instance.directLastPageEnabled(); final last=direct?await AppDatabase.instance.getLastPage(id):null;
+    Widget page=PlotOverviewPage(plotId:id,plotTitle:plot['title'].toString(),plotName:plot['plot_name'].toString(),cropVariety:plot['crop_variety'].toString());
+    if(direct && last!=null){
+      final title=plot['title'].toString(), name=plot['plot_name'].toString(), crop=plot['crop_variety'].toString();
+      if(last=='spray'||last=='drip') page=PlotSpraysPage(plotId:id,plotTitle:title,plotName:name,cropVariety:crop);
+      else if(last=='labour') page=LabourPage(plotId:id,plotTitle:title);
+      else if(last=='other') page=OtherExpensesPage(plotId:id,plotTitle:title);
+      else if(last=='earnings') page=EarningsPage(plotId:id,plotTitle:title);
+    }
+    await Navigator.of(context).push(MaterialPageRoute(builder:(_)=>page)); await _loadPlots();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Spray History'),
+        title: const Text('FarmBook'),
         actions: [
+          IconButton(tooltip: 'Farm Overview', icon: const Icon(Icons.analytics_outlined), onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const FarmOverviewPage()))),
+          IconButton(tooltip: 'Settings', icon: const Icon(Icons.settings), onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsPage()))),
           PopupMenuButton<String>(
             tooltip: 'Backup or restore history',
             onSelected: (value) {
@@ -2306,7 +2517,7 @@ class _PlotHistoryPageState extends State<PlotHistoryPage> {
                 child: ListTile(
                   contentPadding: EdgeInsets.zero,
                   leading: Icon(Icons.upload_file),
-                  title: Text('Spray History Backup'),
+                  title: Text('FarmBook Plot Backup'),
                 ),
               ),
               PopupMenuItem(
@@ -2314,7 +2525,7 @@ class _PlotHistoryPageState extends State<PlotHistoryPage> {
                 child: ListTile(
                   contentPadding: EdgeInsets.zero,
                   leading: Icon(Icons.download),
-                  title: Text('Spray History Restore'),
+                  title: Text('FarmBook Plot Restore'),
                 ),
               ),
             ],
@@ -2405,6 +2616,481 @@ class _PlotHistoryPageState extends State<PlotHistoryPage> {
 }
 
 
+
+// ============================================================
+// FARM OVERVIEW / FINANCE
+// ============================================================
+
+String _fbMoney(double v) => '₹${v.toStringAsFixed(2)}';
+
+class PlotOverviewPage extends StatefulWidget {
+  const PlotOverviewPage({
+    super.key,
+    required this.plotId,
+    required this.plotTitle,
+    required this.plotName,
+    required this.cropVariety,
+  });
+
+  final int plotId;
+  final String plotTitle;
+  final String plotName;
+  final String cropVariety;
+
+  @override
+  State<PlotOverviewPage> createState() => _PlotOverviewPageState();
+}
+
+class _PlotOverviewPageState extends State<PlotOverviewPage> {
+  Map<String, double> totals = {};
+  bool loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    totals = await AppDatabase.instance.plotTotals(widget.plotId);
+    if (!mounted) return;
+    setState(() => loading = false);
+  }
+
+  Future<void> _openSection(String page, Widget child) async {
+    await AppDatabase.instance.setLastPage(widget.plotId, page);
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => child),
+    );
+    await _load();
+  }
+
+  Widget _row(String title, double value, VoidCallback onTap) {
+    return Card(
+      child: ListTile(
+        title: Text(title),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              _fbMoney(value),
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(width: 8),
+            const Icon(Icons.chevron_right),
+          ],
+        ),
+        onTap: onTap,
+      ),
+    );
+  }
+
+  Future<void> _exportPlot() async {
+    try {
+      final payload = await AppDatabase.instance.exportPlot(widget.plotId);
+      final text = const JsonEncoder.withIndent('  ').convert(payload);
+      final bytes = Uint8List.fromList(utf8.encode(text));
+      final safe = widget.plotTitle.replaceAll(RegExp(r'[^A-Za-z0-9_-]+'), '_');
+      final path = await FilePicker.platform.saveFile(
+        dialogTitle: 'Export Plot Data',
+        fileName: 'FarmBook_$safe.json',
+        bytes: bytes,
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+      if (path == null || !mounted) return;
+      await Share.shareXFiles(
+        [XFile(path)],
+        text: 'FarmBook plot data',
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Export failed: $e')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final expense = totals['expense'] ?? 0;
+    final earnings = totals['earnings'] ?? 0;
+    final profit = totals['profit'] ?? 0;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.plotTitle),
+        actions: [
+          IconButton(
+            tooltip: 'Export this plot',
+            icon: const Icon(Icons.share),
+            onPressed: _exportPlot,
+          ),
+          IconButton(
+            tooltip: 'Plot information',
+            icon: const Icon(Icons.info_outline),
+            onPressed: () {
+              showDialog<void>(
+                context: context,
+                builder: (_) => AlertDialog(
+                  title: Text(widget.plotTitle),
+                  content: Text(
+                    'Plot: ${widget.plotName}\n'
+                    'Crop variety: ${widget.cropVariety}',
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('Close'),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        ],
+      ),
+      body: loading
+          ? const Center(child: CircularProgressIndicator())
+          : RefreshIndicator(
+              onRefresh: _load,
+              child: ListView(
+                padding: const EdgeInsets.all(14),
+                children: [
+                  Card(
+                    color: const Color(0xFFE3F2FD),
+                    child: Padding(
+                      padding: const EdgeInsets.all(18),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'PLOT OVERVIEW',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF0D47A1),
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          const Text('Total Expense', style: TextStyle(color: Colors.grey)),
+                          Text(
+                            _fbMoney(expense),
+                            style: const TextStyle(
+                              fontSize: 27,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF0D47A1),
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          const Text('Total Earnings', style: TextStyle(color: Colors.grey)),
+                          Text(
+                            _fbMoney(earnings),
+                            style: const TextStyle(fontSize: 23, fontWeight: FontWeight.bold),
+                          ),
+                          const Divider(height: 28),
+                          Text(
+                            profit >= 0 ? 'PROFIT' : 'LOSS',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: profit >= 0 ? Colors.green.shade700 : Colors.red.shade700,
+                            ),
+                          ),
+                          Text(
+                            _fbMoney(profit.abs()),
+                            style: TextStyle(
+                              fontSize: 27,
+                              fontWeight: FontWeight.bold,
+                              color: profit >= 0 ? Colors.green.shade700 : Colors.red.shade700,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  _row(
+                    '🌿 Spray',
+                    totals['spray'] ?? 0,
+                    () => _openSection(
+                      'spray',
+                      PlotSpraysPage(
+                        plotId: widget.plotId,
+                        plotTitle: widget.plotTitle,
+                        plotName: widget.plotName,
+                        cropVariety: widget.cropVariety,
+                      ),
+                    ),
+                  ),
+                  _row(
+                    '💧 Drip / Irrigation',
+                    totals['drip'] ?? 0,
+                    () => _openSection(
+                      'drip',
+                      PlotSpraysPage(
+                        plotId: widget.plotId,
+                        plotTitle: widget.plotTitle,
+                        plotName: widget.plotName,
+                        cropVariety: widget.cropVariety,
+                      ),
+                    ),
+                  ),
+                  _row(
+                    '👷 Labour',
+                    totals['labour'] ?? 0,
+                    () => _openSection(
+                      'labour',
+                      LabourPage(plotId: widget.plotId, plotTitle: widget.plotTitle),
+                    ),
+                  ),
+                  _row(
+                    '📦 Other Expenses',
+                    totals['other'] ?? 0,
+                    () => _openSection(
+                      'other',
+                      OtherExpensesPage(plotId: widget.plotId, plotTitle: widget.plotTitle),
+                    ),
+                  ),
+                  _row(
+                    '💰 Earnings',
+                    totals['earnings'] ?? 0,
+                    () => _openSection(
+                      'earnings',
+                      EarningsPage(plotId: widget.plotId, plotTitle: widget.plotTitle),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+    );
+  }
+}
+
+class SettingsPage extends StatefulWidget {
+  const SettingsPage({super.key});
+
+  @override
+  State<SettingsPage> createState() => _SettingsPageState();
+}
+
+class _SettingsPageState extends State<SettingsPage> {
+  bool direct = false;
+  bool loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    direct = await AppDatabase.instance.directLastPageEnabled();
+    if (!mounted) return;
+    setState(() => loading = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Settings')),
+      body: loading
+          ? const Center(child: CircularProgressIndicator())
+          : ListView(
+              padding: const EdgeInsets.all(12),
+              children: [
+                Card(
+                  child: SwitchListTile(
+                    title: const Text('Direct open last page'),
+                    subtitle: const Text(
+                      'When you tap a plot, open the last section you used instead of Plot Overview.',
+                    ),
+                    value: direct,
+                    onChanged: (value) async {
+                      await AppDatabase.instance.setDirectLastPageEnabled(value);
+                      if (mounted) setState(() => direct = value);
+                    },
+                  ),
+                ),
+                const Card(
+                  child: ListTile(
+                    leading: Icon(Icons.offline_bolt),
+                    title: Text('Offline storage'),
+                    subtitle: Text('FarmBook records stay on this phone. No login or server is required.'),
+                  ),
+                ),
+              ],
+            ),
+    );
+  }
+}
+
+class LabourPage extends StatefulWidget {
+  const LabourPage({super.key, required this.plotId, required this.plotTitle});
+  final int plotId;
+  final String plotTitle;
+  @override
+  State<LabourPage> createState() => _LabourPageState();
+}
+
+class _LabourPageState extends State<LabourPage> {
+  List<Map<String, dynamic>> rows = [];
+  bool loading = true;
+
+  @override
+  void initState() { super.initState(); _load(); }
+
+  Future<void> _load() async {
+    rows = await AppDatabase.instance.getLabour(widget.plotId);
+    if (mounted) setState(() => loading = false);
+  }
+
+  Future<void> _form([Map<String, dynamic>? row]) async {
+    final work = TextEditingController(text: row?['work_type']?.toString() ?? '');
+    final workers = TextEditingController(text: row == null ? '' : (row['worker_count'] as num).toString());
+    final rate = TextEditingController(text: row == null ? '' : (row['rate'] as num).toString());
+    final amount = TextEditingController(text: row == null ? '' : (row['total_cost'] as num).toString());
+    final notes = TextEditingController(text: row?['notes']?.toString() ?? '');
+    DateTime date = row == null ? DateTime.now() : DateTime.parse(row['labour_date'].toString());
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          title: Text(row == null ? 'Add labour' : 'Edit labour'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(controller: work, decoration: const InputDecoration(labelText: 'Work type')),
+                TextField(controller: workers, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Workers / days')),
+                TextField(controller: rate, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Rate per worker / day')),
+                TextField(controller: amount, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Total cost (₹)')),
+                const SizedBox(height: 8),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.calendar_today),
+                  title: const Text('Date'),
+                  subtitle: Text(_formatDate(date)),
+                  onTap: () async {
+                    final picked = await showDatePicker(context: dialogContext, initialDate: date, firstDate: DateTime(2000), lastDate: DateTime(2100));
+                    if (picked != null) setDialogState(() => date = picked);
+                  },
+                ),
+                TextField(controller: notes, maxLines: 2, decoration: const InputDecoration(labelText: 'Notes')),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () async {
+                final total = double.tryParse(amount.text.trim());
+                if (work.text.trim().isEmpty || total == null || total < 0) return;
+                final count = double.tryParse(workers.text.trim()) ?? 0;
+                final rt = double.tryParse(rate.text.trim()) ?? 0;
+                if (row == null) {
+                  await AppDatabase.instance.addLabour(plotId: widget.plotId, date: date, workType: work.text, workerCount: count, rate: rt, totalCost: total, notes: notes.text);
+                } else {
+                  await AppDatabase.instance.updateLabour(id: row['id'] as int, date: date, workType: work.text, workerCount: count, rate: rt, totalCost: total, notes: notes.text);
+                }
+                if (dialogContext.mounted) Navigator.pop(dialogContext);
+                await _load();
+              },
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+    work.dispose(); workers.dispose(); rate.dispose(); amount.dispose(); notes.dispose();
+  }
+
+  Future<void> _delete(int id) async { await AppDatabase.instance.deleteLabour(id); await _load(); }
+
+  @override
+  Widget build(BuildContext context) {
+    final total = rows.fold<double>(0, (sum, row) => sum + (row['total_cost'] as num).toDouble());
+    return Scaffold(
+      appBar: AppBar(title: Text('${widget.plotTitle} • Labour')),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => _form(), backgroundColor: const Color(0xFF0D47A1), foregroundColor: Colors.white,
+        icon: const Icon(Icons.add), label: const Text('Add labour'),
+      ),
+      body: loading ? const Center(child: CircularProgressIndicator()) : ListView(
+        padding: const EdgeInsets.fromLTRB(12, 12, 12, 100),
+        children: [
+          Card(color: const Color(0xFFE3F2FD), child: ListTile(title: const Text('Total Labour Cost'), trailing: Text(_fbMoney(total), style: const TextStyle(fontSize: 19, fontWeight: FontWeight.bold, color: Color(0xFF0D47A1))))),
+          ...rows.map((row) => Card(child: ListTile(
+            title: Text(row['work_type'].toString(), style: const TextStyle(fontWeight: FontWeight.bold)),
+            subtitle: Text('${_formatDate(DateTime.parse(row['labour_date'].toString()))} • ${(row['worker_count'] as num)} workers × ₹${(row['rate'] as num).toStringAsFixed(2)}'),
+            trailing: Row(mainAxisSize: MainAxisSize.min, children: [Text(_fbMoney((row['total_cost'] as num).toDouble())), PopupMenuButton<String>(onSelected: (v) { if (v == 'edit') _form(row); else _delete(row['id'] as int); }, itemBuilder: (_) => const [PopupMenuItem(value: 'edit', child: Text('Edit')), PopupMenuItem(value: 'delete', child: Text('Delete'))])]),
+          )))
+        ],
+      ),
+    );
+  }
+}
+
+class OtherExpensesPage extends StatefulWidget {
+  const OtherExpensesPage({super.key, required this.plotId, required this.plotTitle});
+  final int plotId;
+  final String plotTitle;
+  @override State<OtherExpensesPage> createState() => _OtherExpensesPageState();
+}
+
+class _OtherExpensesPageState extends State<OtherExpensesPage> {
+  List<Map<String, dynamic>> rows = [];
+  bool loading = true;
+  final categories = const ['Seeds / Plants', 'Fertilizer', 'Electricity', 'Diesel', 'Machinery', 'Transport', 'Rent', 'Repairs', 'Packaging', 'Other'];
+  @override void initState() { super.initState(); _load(); }
+  Future<void> _load() async { rows = await AppDatabase.instance.getOtherExpenses(widget.plotId); if (mounted) setState(() => loading = false); }
+  Future<void> _form([Map<String, dynamic>? row]) async {
+    final desc = TextEditingController(text: row?['description']?.toString() ?? '');
+    final amount = TextEditingController(text: row == null ? '' : (row['amount'] as num).toString());
+    final notes = TextEditingController(text: row?['notes']?.toString() ?? '');
+    String category = row?['category']?.toString() ?? categories.first;
+    DateTime date = row == null ? DateTime.now() : DateTime.parse(row['expense_date'].toString());
+    await showDialog<void>(context: context, builder: (dc) => StatefulBuilder(builder: (dc, set) => AlertDialog(
+      title: Text(row == null ? 'Add expense' : 'Edit expense'),
+      content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
+        DropdownButtonFormField<String>(value: categories.contains(category) ? category : categories.last, items: categories.map((x) => DropdownMenuItem(value: x, child: Text(x))).toList(), onChanged: (v) { if (v != null) set(() => category = v); }, decoration: const InputDecoration(labelText: 'Category')),
+        TextField(controller: desc, decoration: const InputDecoration(labelText: 'Description')),
+        TextField(controller: amount, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Amount (₹)')),
+        ListTile(contentPadding: EdgeInsets.zero, leading: const Icon(Icons.calendar_today), title: const Text('Date'), subtitle: Text(_formatDate(date)), onTap: () async { final picked = await showDatePicker(context: dc, initialDate: date, firstDate: DateTime(2000), lastDate: DateTime(2100)); if (picked != null) set(() => date = picked); }),
+        TextField(controller: notes, maxLines: 2, decoration: const InputDecoration(labelText: 'Notes')),
+      ])),
+      actions: [TextButton(onPressed: () => Navigator.pop(dc), child: const Text('Cancel')), FilledButton(onPressed: () async { final value = double.tryParse(amount.text.trim()); if (desc.text.trim().isEmpty || value == null || value < 0) return; if (row == null) { await AppDatabase.instance.addOtherExpense(plotId: widget.plotId, date: date, category: category, description: desc.text, amount: value, notes: notes.text); } else { await AppDatabase.instance.updateOtherExpense(id: row['id'] as int, date: date, category: category, description: desc.text, amount: value, notes: notes.text); } if (dc.mounted) Navigator.pop(dc); await _load(); }, child: const Text('Save'))],
+    ))); desc.dispose(); amount.dispose(); notes.dispose();
+  }
+  Future<void> _delete(int id) async { await AppDatabase.instance.deleteOtherExpense(id); await _load(); }
+  @override Widget build(BuildContext context) { final total=rows.fold<double>(0,(sum,row)=>sum+(row['amount']as num).toDouble()); return Scaffold(appBar:AppBar(title:Text('${widget.plotTitle} • Expenses')),floatingActionButton:FloatingActionButton.extended(onPressed:()=>_form(),backgroundColor:const Color(0xFF0D47A1),foregroundColor:Colors.white,icon:const Icon(Icons.add),label:const Text('Add expense')),body:loading?const Center(child:CircularProgressIndicator()):ListView(padding:const EdgeInsets.fromLTRB(12,12,12,100),children:[Card(color:const Color(0xFFE3F2FD),child:ListTile(title:const Text('Total Other Expenses'),trailing:Text(_fbMoney(total),style:const TextStyle(fontSize:19,fontWeight:FontWeight.bold,color:Color(0xFF0D47A1))))),...rows.map((row)=>Card(child:ListTile(title:Text(row['description'].toString()),subtitle:Text('${row['category']} • ${_formatDate(DateTime.parse(row['expense_date'].toString()))}'),trailing:Row(mainAxisSize:MainAxisSize.min,children:[Text(_fbMoney((row['amount']as num).toDouble())),PopupMenuButton<String>(onSelected:(v){if(v=='edit')_form(row);else _delete(row['id']as int);},itemBuilder:(_)=>const[PopupMenuItem(value:'edit',child:Text('Edit')),PopupMenuItem(value:'delete',child:Text('Delete'))])])))]); }
+}
+
+class EarningsPage extends StatefulWidget {
+  const EarningsPage({super.key, required this.plotId, required this.plotTitle});
+  final int plotId; final String plotTitle;
+  @override State<EarningsPage> createState() => _EarningsPageState();
+}
+class _EarningsPageState extends State<EarningsPage> {
+  List<Map<String,dynamic>> rows=[]; bool loading=true;
+  @override void initState(){super.initState();_load();}
+  Future<void> _load()async{rows=await AppDatabase.instance.getEarnings(widget.plotId);if(mounted)setState(()=>loading=false);}
+  Future<void> _form([Map<String,dynamic>? row])async{
+    final desc=TextEditingController(text:row?['description']?.toString()??'');
+    final qty=TextEditingController(text:row==null?'':(row['quantity']as num).toString());
+    final unit=TextEditingController(text:row?['unit']?.toString()??'kg');
+    final price=TextEditingController(text:row==null?'':(row['price']as num).toString());
+    final amount=TextEditingController(text:row==null?'':(row['amount']as num).toString());
+    final notes=TextEditingController(text:row?['notes']?.toString()??'');
+    DateTime date=row==null?DateTime.now():DateTime.parse(row['earning_date'].toString());
+    await showDialog<void>(context:context,builder:(dc)=>StatefulBuilder(builder:(dc,set)=>AlertDialog(title:Text(row==null?'Add earning':'Edit earning'),content:SingleChildScrollView(child:Column(mainAxisSize:MainAxisSize.min,children:[TextField(controller:desc,decoration:const InputDecoration(labelText:'Description')),TextField(controller:qty,keyboardType:const TextInputType.numberWithOptions(decimal:true),decoration:const InputDecoration(labelText:'Quantity')),TextField(controller:unit,decoration:const InputDecoration(labelText:'Unit (kg, box, etc.)')),TextField(controller:price,keyboardType:const TextInputType.numberWithOptions(decimal:true),decoration:const InputDecoration(labelText:'Price / unit (₹)')),TextField(controller:amount,keyboardType:const TextInputType.numberWithOptions(decimal:true),decoration:const InputDecoration(labelText:'Total earning (₹)')),ListTile(contentPadding:EdgeInsets.zero,leading:const Icon(Icons.calendar_today),title:const Text('Date'),subtitle:Text(_formatDate(date)),onTap:()async{final picked=await showDatePicker(context:dc,initialDate:date,firstDate:DateTime(2000),lastDate:DateTime(2100));if(picked!=null)set(()=>date=picked);}),TextField(controller:notes,maxLines:2,decoration:const InputDecoration(labelText:'Notes'))])),actions:[TextButton(onPressed:()=>Navigator.pop(dc),child:const Text('Cancel')),FilledButton(onPressed:()async{final value=double.tryParse(amount.text.trim());if(desc.text.trim().isEmpty||value==null||value<0)return;final q=double.tryParse(qty.text.trim())??0;final p=double.tryParse(price.text.trim())??0;if(row==null)await AppDatabase.instance.addEarning(plotId:widget.plotId,date:date,description:desc.text,quantity:q,unit:unit.text,price:p,amount:value,notes:notes.text);else await AppDatabase.instance.updateEarning(id:row['id']as int,date:date,description:desc.text,quantity:q,unit:unit.text,price:p,amount:value,notes:notes.text);if(dc.mounted)Navigator.pop(dc);await _load();},child:const Text('Save'))]));desc.dispose();qty.dispose();unit.dispose();price.dispose();amount.dispose();notes.dispose();}
+  Future<void> _delete(int id)async{await AppDatabase.instance.deleteEarning(id);await _load();}
+  @override Widget build(BuildContext context){final total=rows.fold<double>(0,(sum,row)=>sum+(row['amount']as num).toDouble());return Scaffold(appBar:AppBar(title:Text('${widget.plotTitle} • Earnings')),floatingActionButton:FloatingActionButton.extended(onPressed:()=>_form(),backgroundColor:const Color(0xFF0D47A1),foregroundColor:Colors.white,icon:const Icon(Icons.add),label:const Text('Add earning')),body:loading?const Center(child:CircularProgressIndicator()):ListView(padding:const EdgeInsets.fromLTRB(12,12,12,100),children:[Card(color:const Color(0xFFE3F2FD),child:ListTile(title:const Text('Total Earnings'),trailing:Text(_fbMoney(total),style:const TextStyle(fontSize:19,fontWeight:FontWeight.bold,color:Color(0xFF0D47A1))))),...rows.map((row)=>Card(child:ListTile(title:Text(row['description'].toString(),style:const TextStyle(fontWeight:FontWeight.bold)),subtitle:Text('${_formatDate(DateTime.parse(row['earning_date'].toString()))} • ${(row['quantity']as num)} ${row['unit']} × ₹${(row['price']as num).toStringAsFixed(2)}'),trailing:Row(mainAxisSize:MainAxisSize.min,children:[Text(_fbMoney((row['amount']as num).toDouble())),PopupMenuButton<String>(onSelected:(v){if(v=='edit')_form(row);else _delete(row['id']as int);},itemBuilder:(_)=>const[PopupMenuItem(value:'edit',child:Text('Edit')),PopupMenuItem(value:'delete',child:Text('Delete'))])])))]);}
+}
+
+class FarmOverviewPage extends StatefulWidget { const FarmOverviewPage({super.key}); @override State<FarmOverviewPage> createState()=>_FarmOverviewPageState(); }
+class _FarmOverviewPageState extends State<FarmOverviewPage>{Map<String,double> totals={};bool loading=true;@override void initState(){super.initState();_load();}Future<void>_load()async{totals=await AppDatabase.instance.allPlotTotals();if(mounted)setState(()=>loading=false);}@override Widget build(BuildContext context){final profit=totals['profit']??0;return Scaffold(appBar:AppBar(title:const Text('Farm Overview')),body:loading?const Center(child:CircularProgressIndicator()):RefreshIndicator(onRefresh:_load,child:ListView(padding:const EdgeInsets.all(14),children:[Card(color:const Color(0xFFE3F2FD),child:Padding(padding:const EdgeInsets.all(18),child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[const Text('ALL PLOTS',style:TextStyle(fontWeight:FontWeight.bold,color:Color(0xFF0D47A1))),const SizedBox(height:12),Text('Total Expenses  ${_fbMoney(totals['expense']??0)}'),Text('Total Earnings  ${_fbMoney(totals['earnings']??0)}'),const Divider(),Text(profit>=0?'TOTAL PROFIT':'TOTAL LOSS',style:TextStyle(fontWeight:FontWeight.bold)),Text(_fbMoney(profit.abs()),style:TextStyle(fontSize:28,fontWeight:FontWeight.bold,color:profit>=0?Colors.green.shade700:Colors.red.shade700))])),_farmTotal('Spray',totals['spray']??0),_farmTotal('Drip / Irrigation',totals['drip']??0),_farmTotal('Labour',totals['labour']??0),_farmTotal('Other Expenses',totals['other']??0)])));}Widget _farmTotal(String title,double value)=>Card(child:ListTile(title:Text(title),trailing:Text(_fbMoney(value),style:const TextStyle(fontWeight:FontWeight.bold))));}
+
+"""
+p=Path('/mnt/data/FarmBook_main_blast.dart');s=p.read_text();a=s.index('// ============================================================\n// FARM OVERVIEW / FINANCE\n');b=s.index('// ============================================================\n// PLOT HISTORY / SPRAY + DRIP PAGE\n',a);s=s[:a]+ui+s[b:];p.write_text(s)
 // ============================================================
 // PLOT HISTORY / SPRAY + DRIP PAGE
 // ============================================================
@@ -2626,6 +3312,7 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
               backgroundColor: const Color(0xFF0D47A1),
               foregroundColor: Colors.white,
               onPressed: () async {
+                await AppDatabase.instance.setLastPage(widget.plotId, 'spray');
                 await Navigator.of(context).push(
                   MaterialPageRoute(
                     builder: (_) => AddSprayPage(
@@ -2645,6 +3332,7 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
               backgroundColor: Colors.teal.shade700,
               foregroundColor: Colors.white,
               onPressed: () async {
+                await AppDatabase.instance.setLastPage(widget.plotId, 'drip');
                 await Navigator.of(context).push(
                   MaterialPageRoute(
                     builder: (_) => AddDripPage(
@@ -2979,6 +3667,11 @@ class _AddDripPageState extends State<AddDripPage> {
           final matching = chemicals.where((c) => c['id'] == chemicalId);
           final chemicalUnit =
               matching.isNotEmpty ? (matching.first['unit']?.toString() ?? '') : '';
+          final savedDosageUnit = row['dosage_unit']?.toString() ?? '';
+          final automaticDosageUnit = dripDosageUnitForChemical(
+            chemicalUnit,
+            legacyUnit: savedDosageUnit.isNotEmpty ? savedDosageUnit : 'L/acre',
+          );
 
           final selected = SelectedDripChemical(
             id: chemicalId,
@@ -2986,7 +3679,7 @@ class _AddDripPageState extends State<AddDripPage> {
             price: (row['price_per_unit'] as num).toDouble(),
             unit: chemicalUnit,
             dosage: (row['dosage'] as num).toDouble(),
-            dosageUnit: row['dosage_unit'].toString(),
+            dosageUnit: automaticDosageUnit,
           );
           _selectedChemicals.add(selected);
           _createDosageController(selected);
@@ -3049,11 +3742,18 @@ class _AddDripPageState extends State<AddDripPage> {
     final id = row['id'] as int;
     if (_isSelected(id)) return;
 
+    final chemicalUnit = row['unit']?.toString() ?? '';
+    if (chemicalUnit.isEmpty) {
+      _showError('Set the chemical unit in Chemical Database first.');
+      return;
+    }
+
     final selected = SelectedDripChemical(
       id: id,
       name: row['name'].toString(),
       price: (row['price'] as num).toDouble(),
-      unit: row['unit']?.toString() ?? '',
+      unit: chemicalUnit,
+      dosageUnit: dripDosageUnitForChemical(chemicalUnit),
     );
 
     setState(() => _selectedChemicals.add(selected));
@@ -3095,6 +3795,12 @@ class _AddDripPageState extends State<AddDripPage> {
     }
 
     for (final chemical in _selectedChemicals) {
+      if (chemical.unit.isEmpty) {
+        _showError(
+          'Set the unit for ${chemical.name} in Chemical Database first.',
+        );
+        return;
+      }
       if (chemical.dosage <= 0) {
         _showError(
           'Enter a dosage greater than 0 for ${chemical.name}.',
@@ -3309,27 +4015,17 @@ class _AddDripPageState extends State<AddDripPage> {
                                 ),
                                 const SizedBox(width: 10),
                                 Expanded(
-                                  child: DropdownButtonFormField<String>(
-                                    value: chemical.dosageUnit,
+                                  child: InputDecorator(
                                     decoration: const InputDecoration(
-                                      labelText: 'Dosage unit',
+                                      labelText: 'Dosage unit (automatic)',
+                                      prefixIcon: Icon(Icons.auto_awesome),
                                     ),
-                                    items: const [
-                                      DropdownMenuItem(
-                                        value: 'L/acre',
-                                        child: Text('L/acre'),
+                                    child: Text(
+                                      chemical.dosageUnit,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w600,
                                       ),
-                                      DropdownMenuItem(
-                                        value: 'kg/acre',
-                                        child: Text('kg/acre'),
-                                      ),
-                                    ],
-                                    onChanged: (value) {
-                                      if (value == null) return;
-                                      setState(
-                                        () => chemical.dosageUnit = value,
-                                      );
-                                    },
+                                    ),
                                   ),
                                 ),
                               ],
@@ -3357,11 +4053,13 @@ class _AddDripPageState extends State<AddDripPage> {
                                   ),
                                   const SizedBox(height: 6),
                                   Text(
-                                    multiplier == 1.0
-                                        ? 'Priced per ${chemical.unit.isNotEmpty ? chemical.unit : (chemical.dosageUnit == 'L/acre' ? 'L' : 'kg')} — no unit conversion needed.'
-                                        : (chemical.dosageUnit == 'L/acre'
-                                            ? 'L/acre is converted to ml/acre × 1000 (priced per ml).'
-                                            : 'kg/acre is converted to gram/acre × 1000 (priced per gram).'),
+                                    chemical.unit.toLowerCase() == 'ml' ||
+                                            chemical.unit.toLowerCase() == 'l'
+                                        ? 'Unit ${chemical.unit} → dosage is automatically L/acre.'
+                                        : chemical.unit.toLowerCase() == 'gram' ||
+                                                chemical.unit.toLowerCase() == 'kg'
+                                            ? 'Unit ${chemical.unit} → dosage is automatically kg/acre.'
+                                            : 'Set the chemical unit in Chemical Database to enable automatic dosage units.',
                                     style: const TextStyle(
                                       color: Colors.grey,
                                       fontSize: 12,
