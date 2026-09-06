@@ -5,7 +5,6 @@ import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:path/path.dart' as p;
 import 'package:share_plus/share_plus.dart';
 
 import 'database.dart';
@@ -513,7 +512,7 @@ class _FbCropCard extends StatelessWidget {
                     child: Text(
                       lastSpray == null
                           ? '🧪 No sprays recorded yet'
-                          : '🧪 Last spray: ${_formatDate(DateTime.parse(lastSpray!['spray_date'].toString()))}',
+                          : '🧪 Last spray: ${formatDate(DateTime.parse(lastSpray!['spray_date'].toString()))}',
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(color: Colors.grey),
                     ),
@@ -600,8 +599,8 @@ class _FbActivityTile extends StatelessWidget {
       title: Text(item['title'].toString()),
       subtitle: Text(
         subtitle.isEmpty
-            ? (created == null ? '' : _formatDate(created))
-            : (created == null ? subtitle : '$subtitle • ${_formatDate(created)}'),
+            ? (created == null ? '' : formatDate(created))
+            : (created == null ? subtitle : '$subtitle • ${formatDate(created)}'),
       ),
     );
   }
@@ -1058,7 +1057,7 @@ class _ChemicalsPageState extends State<ChemicalsPage> {
       text: chemical == null ||
               ((chemical['price'] as num?)?.toDouble() ?? 0) == 0
           ? ''
-          : _formatNumber((chemical['price'] as num).toDouble()),
+          : formatNumber((chemical['price'] as num).toDouble()),
     );
     final isEditing = chemical != null;
     String selectedUnit = chemical?['unit']?.toString() ?? '';
@@ -1145,10 +1144,10 @@ class _ChemicalsPageState extends State<ChemicalsPage> {
                   }
 
                   final calculated = packagePrice / size;
-                  priceController.text = _formatNumber(calculated);
+                  priceController.text = formatNumber(calculated);
                   packageSummary =
-                      '${_formatNumber(size)} $selectedUnit for ₹${_formatNumber(packagePrice)} → '
-                      '₹${_formatNumber(calculated)} per $selectedUnit';
+                      '${formatNumber(size)} $selectedUnit for ₹${formatNumber(packagePrice)} → '
+                      '₹${formatNumber(calculated)} per $selectedUnit';
                   refresh(() {});
                   Navigator.pop(calculatorContext);
                 },
@@ -2167,7 +2166,7 @@ class _PlotOverviewPageState extends State<PlotOverviewPage> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
-              _fbMoney(value),
+              fbMoney(value),
               style: const TextStyle(fontWeight: FontWeight.bold),
             ),
             const SizedBox(width: 8),
@@ -2268,7 +2267,7 @@ class _PlotOverviewPageState extends State<PlotOverviewPage> {
                           const SizedBox(height: 12),
                           const Text('Total Expense', style: TextStyle(color: Colors.grey)),
                           Text(
-                            _fbMoney(expense),
+                            fbMoney(expense),
                             style: const TextStyle(
                               fontSize: 27,
                               fontWeight: FontWeight.bold,
@@ -2278,7 +2277,7 @@ class _PlotOverviewPageState extends State<PlotOverviewPage> {
                           const SizedBox(height: 10),
                           const Text('Total Earnings', style: TextStyle(color: Colors.grey)),
                           Text(
-                            _fbMoney(earnings),
+                            fbMoney(earnings),
                             style: const TextStyle(fontSize: 23, fontWeight: FontWeight.bold),
                           ),
                           const Divider(height: 28),
@@ -2290,7 +2289,7 @@ class _PlotOverviewPageState extends State<PlotOverviewPage> {
                             ),
                           ),
                           Text(
-                            _fbMoney(profit.abs()),
+                            fbMoney(profit.abs()),
                             style: TextStyle(
                               fontSize: 27,
                               fontWeight: FontWeight.bold,
@@ -2462,7 +2461,7 @@ class _LabourPageState extends State<LabourPage> {
                   contentPadding: EdgeInsets.zero,
                   leading: const Icon(Icons.calendar_today),
                   title: const Text('Date'),
-                  subtitle: Text(_formatDate(date)),
+                  subtitle: Text(formatDate(date)),
                   onTap: () async {
                     final picked = await showDatePicker(context: dialogContext, initialDate: date, firstDate: DateTime(2000), lastDate: DateTime(2100));
                     if (picked != null) setDialogState(() => date = picked);
@@ -2511,11 +2510,11 @@ class _LabourPageState extends State<LabourPage> {
       body: loading ? const Center(child: CircularProgressIndicator()) : ListView(
         padding: const EdgeInsets.fromLTRB(12, 12, 12, 100),
         children: [
-          Card(color: const Color(0xFFE3F2FD), child: ListTile(title: const Text('Total Labour Cost'), trailing: Text(_fbMoney(total), style: const TextStyle(fontSize: 19, fontWeight: FontWeight.bold, color: Color(0xFF0D47A1))))),
+          Card(color: const Color(0xFFE3F2FD), child: ListTile(title: const Text('Total Labour Cost'), trailing: Text(fbMoney(total), style: const TextStyle(fontSize: 19, fontWeight: FontWeight.bold, color: Color(0xFF0D47A1))))),
           ...rows.map((row) => Card(child: ListTile(
             title: Text(row['work_type'].toString(), style: const TextStyle(fontWeight: FontWeight.bold)),
-            subtitle: Text('${_formatDate(DateTime.parse(row['labour_date'].toString()))} • ${(row['worker_count'] as num)} workers × ₹${(row['rate'] as num).toStringAsFixed(2)}'),
-            trailing: Row(mainAxisSize: MainAxisSize.min, children: [Text(_fbMoney((row['total_cost'] as num).toDouble())), PopupMenuButton<String>(onSelected: (v) { if (v == 'edit') { _form(row); } else { _delete(row['id'] as int); } }, itemBuilder: (_) => const [PopupMenuItem(value: 'edit', child: Text('Edit')), PopupMenuItem(value: 'delete', child: Text('Delete'))])]),
+            subtitle: Text('${formatDate(DateTime.parse(row['labour_date'].toString()))} • ${(row['worker_count'] as num)} workers × ₹${(row['rate'] as num).toStringAsFixed(2)}'),
+            trailing: Row(mainAxisSize: MainAxisSize.min, children: [Text(fbMoney((row['total_cost'] as num).toDouble())), PopupMenuButton<String>(onSelected: (v) { if (v == 'edit') { _form(row); } else { _delete(row['id'] as int); } }, itemBuilder: (_) => const [PopupMenuItem(value: 'edit', child: Text('Edit')), PopupMenuItem(value: 'delete', child: Text('Delete'))])]),
           )))
         ],
       ),
@@ -2548,14 +2547,14 @@ class _OtherExpensesPageState extends State<OtherExpensesPage> {
         DropdownButtonFormField<String>(value: categories.contains(category) ? category : categories.last, items: categories.map((x) => DropdownMenuItem(value: x, child: Text(x))).toList(), onChanged: (v) { if (v != null) set(() => category = v); }, decoration: const InputDecoration(labelText: 'Category')),
         TextField(controller: desc, decoration: const InputDecoration(labelText: 'Description')),
         TextField(controller: amount, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Amount (₹)')),
-        ListTile(contentPadding: EdgeInsets.zero, leading: const Icon(Icons.calendar_today), title: const Text('Date'), subtitle: Text(_formatDate(date)), onTap: () async { final picked = await showDatePicker(context: dc, initialDate: date, firstDate: DateTime(2000), lastDate: DateTime(2100)); if (picked != null) set(() => date = picked); }),
+        ListTile(contentPadding: EdgeInsets.zero, leading: const Icon(Icons.calendar_today), title: const Text('Date'), subtitle: Text(formatDate(date)), onTap: () async { final picked = await showDatePicker(context: dc, initialDate: date, firstDate: DateTime(2000), lastDate: DateTime(2100)); if (picked != null) set(() => date = picked); }),
         TextField(controller: notes, maxLines: 2, decoration: const InputDecoration(labelText: 'Notes')),
       ])),
       actions: [TextButton(onPressed: () => Navigator.pop(dc), child: const Text('Cancel')), FilledButton(onPressed: () async { final value = double.tryParse(amount.text.trim()); if (desc.text.trim().isEmpty || value == null || value < 0) return; if (row == null) { await AppDatabase.instance.addOtherExpense(plotId: widget.plotId, date: date, category: category, description: desc.text, amount: value, notes: notes.text); } else { await AppDatabase.instance.updateOtherExpense(id: row['id'] as int, date: date, category: category, description: desc.text, amount: value, notes: notes.text); } if (dc.mounted) Navigator.pop(dc); await _load(); }, child: const Text('Save'))],
     ))); desc.dispose(); amount.dispose(); notes.dispose();
   }
   Future<void> _delete(int id) async { await AppDatabase.instance.deleteOtherExpense(id); await _load(); }
-  @override Widget build(BuildContext context) { final total=rows.fold<double>(0,(sum,row)=>sum+(row['amount']as num).toDouble()); return Scaffold(appBar:AppBar(title:Text('${widget.plotTitle} • Expenses')),floatingActionButton:FloatingActionButton.extended(onPressed:()=>_form(),backgroundColor:const Color(0xFF0D47A1),foregroundColor:Colors.white,icon:const Icon(Icons.add),label:const Text('Add expense')),body:loading?const Center(child:CircularProgressIndicator()):ListView(padding:const EdgeInsets.fromLTRB(12,12,12,100),children:[Card(color:const Color(0xFFE3F2FD),child:ListTile(title:const Text('Total Other Expenses'),trailing:Text(_fbMoney(total),style:const TextStyle(fontSize:19,fontWeight:FontWeight.bold,color:Color(0xFF0D47A1))))),...rows.map((row)=>Card(child:ListTile(title:Text(row['description'].toString()),subtitle:Text('${row['category']} • ${_formatDate(DateTime.parse(row['expense_date'].toString()))}'),trailing:Row(mainAxisSize:MainAxisSize.min,children:[Text(_fbMoney((row['amount']as num).toDouble())),PopupMenuButton<String>(onSelected:(v){if(v=='edit'){_form(row);}else{_delete(row['id']as int);}},itemBuilder:(_)=>const[PopupMenuItem(value:'edit',child:Text('Edit')),PopupMenuItem(value:'delete',child:Text('Delete'))])]))))])); }
+  @override Widget build(BuildContext context) { final total=rows.fold<double>(0,(sum,row)=>sum+(row['amount']as num).toDouble()); return Scaffold(appBar:AppBar(title:Text('${widget.plotTitle} • Expenses')),floatingActionButton:FloatingActionButton.extended(onPressed:()=>_form(),backgroundColor:const Color(0xFF0D47A1),foregroundColor:Colors.white,icon:const Icon(Icons.add),label:const Text('Add expense')),body:loading?const Center(child:CircularProgressIndicator()):ListView(padding:const EdgeInsets.fromLTRB(12,12,12,100),children:[Card(color:const Color(0xFFE3F2FD),child:ListTile(title:const Text('Total Other Expenses'),trailing:Text(fbMoney(total),style:const TextStyle(fontSize:19,fontWeight:FontWeight.bold,color:Color(0xFF0D47A1))))),...rows.map((row)=>Card(child:ListTile(title:Text(row['description'].toString()),subtitle:Text('${row['category']} • ${formatDate(DateTime.parse(row['expense_date'].toString()))}'),trailing:Row(mainAxisSize:MainAxisSize.min,children:[Text(fbMoney((row['amount']as num).toDouble())),PopupMenuButton<String>(onSelected:(v){if(v=='edit'){_form(row);}else{_delete(row['id']as int);}},itemBuilder:(_)=>const[PopupMenuItem(value:'edit',child:Text('Edit')),PopupMenuItem(value:'delete',child:Text('Delete'))])]))))])); }
 }
 
 /// Standard unit choices for earnings. "other" allows a free-text unit.
@@ -2607,13 +2606,13 @@ class _EarningsPageState extends State<EarningsPage> {
     bool totalOnly = row == null ? true : _isTotalOnly(row);
 
     final totalCtrl = TextEditingController(
-      text: totalOnly && existingAmount != 0 ? _formatNumber(existingAmount) : '',
+      text: totalOnly && existingAmount != 0 ? formatNumber(existingAmount) : '',
     );
     final qtyCtrl = TextEditingController(
-      text: !totalOnly && existingQty != 0 ? _formatNumber(existingQty) : '',
+      text: !totalOnly && existingQty != 0 ? formatNumber(existingQty) : '',
     );
     final rateCtrl = TextEditingController(
-      text: !totalOnly && existingPrice != 0 ? _formatNumber(existingPrice) : '',
+      text: !totalOnly && existingPrice != 0 ? formatNumber(existingPrice) : '',
     );
 
     String unit = kFbEarningUnits.contains(existingUnit)
@@ -2736,7 +2735,7 @@ class _EarningsPageState extends State<EarningsPage> {
                     ),
                     const SizedBox(height: 12),
                     Text(
-                      'Total earning (calculated): ${_fbMoney(calculatedTotal)}',
+                      'Total earning (calculated): ${fbMoney(calculatedTotal)}',
                       style: const TextStyle(fontWeight: FontWeight.bold),
                     ),
                   ],
@@ -2745,7 +2744,7 @@ class _EarningsPageState extends State<EarningsPage> {
                     contentPadding: EdgeInsets.zero,
                     leading: const Icon(Icons.calendar_today),
                     title: const Text('Date'),
-                    subtitle: Text(_formatDate(date)),
+                    subtitle: Text(formatDate(date)),
                     onTap: () async {
                       final picked = await showDatePicker(
                         context: dc,
@@ -2859,7 +2858,7 @@ class _EarningsPageState extends State<EarningsPage> {
                   child: ListTile(
                     title: const Text('Total Earnings'),
                     trailing: Text(
-                      _fbMoney(total),
+                      fbMoney(total),
                       style: const TextStyle(
                         fontSize: 19,
                         fontWeight: FontWeight.bold,
@@ -2872,7 +2871,7 @@ class _EarningsPageState extends State<EarningsPage> {
                   final totalOnly = _isTotalOnly(row);
                   final breakdown = totalOnly
                       ? '— | —'
-                      : '${_formatNumber((row['quantity'] as num).toDouble())} '
+                      : '${formatNumber((row['quantity'] as num).toDouble())} '
                           '${row['unit']} × ₹${(row['price'] as num).toStringAsFixed(2)}';
                   return Card(
                     child: ListTile(
@@ -2881,12 +2880,12 @@ class _EarningsPageState extends State<EarningsPage> {
                         style: const TextStyle(fontWeight: FontWeight.bold),
                       ),
                       subtitle: Text(
-                        '${_formatDate(DateTime.parse(row['earning_date'].toString()))} • $breakdown',
+                        '${formatDate(DateTime.parse(row['earning_date'].toString()))} • $breakdown',
                       ),
                       trailing: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Text(_fbMoney((row['amount'] as num).toDouble())),
+                          Text(fbMoney((row['amount'] as num).toDouble())),
                           PopupMenuButton<String>(
                             onSelected: (v) {
                               if (v == 'edit') {
@@ -3142,7 +3141,7 @@ class _PesticideUsagePageState extends State<PesticideUsagePage> {
 }
 
 class FarmOverviewPage extends StatefulWidget { const FarmOverviewPage({super.key}); @override State<FarmOverviewPage> createState()=>_FarmOverviewPageState(); }
-class _FarmOverviewPageState extends State<FarmOverviewPage>{Map<String,double> totals={};bool loading=true;@override void initState(){super.initState();_load();}Future<void>_load()async{totals=await AppDatabase.instance.allPlotTotals();if(mounted)setState(()=>loading=false);}@override Widget build(BuildContext context){final profit=totals['profit']??0;return Scaffold(appBar:AppBar(title:const Text('Farm Overview')),body:loading?const Center(child:CircularProgressIndicator()):RefreshIndicator(onRefresh:_load,child:ListView(padding:const EdgeInsets.all(14),children:[Card(color:const Color(0xFFE3F2FD),child:Padding(padding:const EdgeInsets.all(18),child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[const Text('ALL PLOTS',style:TextStyle(fontWeight:FontWeight.bold,color:Color(0xFF0D47A1))),const SizedBox(height:12),Text('Total Expenses  ${_fbMoney(totals['expense']??0)}'),Text('Total Earnings  ${_fbMoney(totals['earnings']??0)}'),const Divider(),Text(profit>=0?'TOTAL PROFIT':'TOTAL LOSS',style:const TextStyle(fontWeight:FontWeight.bold)),Text(_fbMoney(profit.abs()),style:TextStyle(fontSize:28,fontWeight:FontWeight.bold,color:profit>=0?Colors.green.shade700:Colors.red.shade700))]))),_farmTotal('Spray',totals['spray']??0),_farmTotal('Drip / Irrigation',totals['drip']??0),_farmTotal('Labour',totals['labour']??0),_farmTotal('Other Expenses',totals['other']??0)])));}Widget _farmTotal(String title,double value)=>Card(child:ListTile(title:Text(title),trailing:Text(_fbMoney(value),style:const TextStyle(fontWeight:FontWeight.bold))));}
+class _FarmOverviewPageState extends State<FarmOverviewPage>{Map<String,double> totals={};bool loading=true;@override void initState(){super.initState();_load();}Future<void>_load()async{totals=await AppDatabase.instance.allPlotTotals();if(mounted)setState(()=>loading=false);}@override Widget build(BuildContext context){final profit=totals['profit']??0;return Scaffold(appBar:AppBar(title:const Text('Farm Overview')),body:loading?const Center(child:CircularProgressIndicator()):RefreshIndicator(onRefresh:_load,child:ListView(padding:const EdgeInsets.all(14),children:[Card(color:const Color(0xFFE3F2FD),child:Padding(padding:const EdgeInsets.all(18),child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[const Text('ALL PLOTS',style:TextStyle(fontWeight:FontWeight.bold,color:Color(0xFF0D47A1))),const SizedBox(height:12),Text('Total Expenses  ${fbMoney(totals['expense']??0)}'),Text('Total Earnings  ${fbMoney(totals['earnings']??0)}'),const Divider(),Text(profit>=0?'TOTAL PROFIT':'TOTAL LOSS',style:const TextStyle(fontWeight:FontWeight.bold)),Text(fbMoney(profit.abs()),style:TextStyle(fontSize:28,fontWeight:FontWeight.bold,color:profit>=0?Colors.green.shade700:Colors.red.shade700))]))),_farmTotal('Spray',totals['spray']??0),_farmTotal('Drip / Irrigation',totals['drip']??0),_farmTotal('Labour',totals['labour']??0),_farmTotal('Other Expenses',totals['other']??0)])));}Widget _farmTotal(String title,double value)=>Card(child:ListTile(title:Text(title),trailing:Text(fbMoney(value),style:const TextStyle(fontWeight:FontWeight.bold))));}
 
 // ============================================================
 // PLOT HISTORY / SPRAY + DRIP PAGE
@@ -3223,7 +3222,7 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
           'chemicals': chemicals
               .map(
                 (c) =>
-                    '${c['chemical_name']} (${_formatNumber((c['dosage'] as num).toDouble())} ${c['dosage_unit']})',
+                    '${c['chemical_name']} (${formatNumber((c['dosage'] as num).toDouble())} ${c['dosage_unit']})',
               )
               .join(' + '),
           'original': drip,
@@ -3439,7 +3438,7 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
                   ),
                 )
               : _records.isEmpty
-                  ? const Center(
+                  ? Center(
                       child: Padding(
                         padding: EdgeInsets.all(30),
                         child: Text(
@@ -3453,8 +3452,8 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
                   : ListView(
                       padding: const EdgeInsets.only(bottom: 120),
                       children: [
-                        const Padding(
-                          padding: EdgeInsets.fromLTRB(16, 12, 16, 4),
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
                           child: Text(
                             _recordTab == 0
                                  ? 'Spray records are shown here. Tap a row to edit it.'
@@ -3572,7 +3571,7 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
                                       ),
                                     ),
                                   ),
-                                  DataCell(Text(_formatDate(date))),
+                                  DataCell(Text(formatDate(date))),
                                   DataCell(
                                     SizedBox(
                                       width: 260,
@@ -3582,8 +3581,8 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
                                   DataCell(
                                     Text(
                                       isSpray
-                                          ? '${_formatNumber(quantity)} L'
-                                          : '${_formatNumber(quantity)} acres',
+                                          ? '${formatNumber(quantity)} L'
+                                          : '${formatNumber(quantity)} acres',
                                     ),
                                   ),
                                   DataCell(
@@ -3726,7 +3725,7 @@ class _AddDripPageState extends State<AddDripPage> {
         final drip = widget.drip!;
         _selectedDate = DateTime.parse(drip['drip_date'].toString());
         _acresController.text =
-            _formatNumber((drip['acres'] as num).toDouble());
+            formatNumber((drip['acres'] as num).toDouble());
         _notesController.text = drip['notes'].toString();
 
         final rows =
@@ -3796,7 +3795,7 @@ class _AddDripPageState extends State<AddDripPage> {
     if (_dosageControllers.containsKey(chemical.id)) return;
 
     final controller = TextEditingController(
-      text: chemical.dosage == 0 ? '' : _formatNumber(chemical.dosage),
+      text: chemical.dosage == 0 ? '' : formatNumber(chemical.dosage),
     );
 
     controller.addListener(() {
@@ -3951,7 +3950,7 @@ class _AddDripPageState extends State<AddDripPage> {
                       labelText: 'Date',
                       prefixIcon: Icon(Icons.calendar_today),
                     ),
-                    child: Text(_formatDate(_selectedDate)),
+                    child: Text(formatDate(_selectedDate)),
                   ),
                 ),
                 const SizedBox(height: 14),
@@ -4112,13 +4111,13 @@ class _AddDripPageState extends State<AddDripPage> {
                                 chemical.unit,
                               );
                               final multiplierLabel =
-                                  multiplier == 1.0 ? '' : '× ${_formatNumber(multiplier)} ';
+                                  multiplier == 1.0 ? '' : '× ${formatNumber(multiplier)} ';
                               return Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(
-                                    'Cost: ${_formatNumber(_acres)} acres × '
-                                    '${_formatNumber(chemical.dosage)} ${chemical.dosageUnit} '
+                                    'Cost: ${formatNumber(_acres)} acres × '
+                                    '${formatNumber(chemical.dosage)} ${chemical.dosageUnit} '
                                     '$multiplierLabel× ₹${chemical.price.toStringAsFixed(2)} = '
                                     '₹${_chemicalCost(chemical).toStringAsFixed(2)}',
                                     style: const TextStyle(
@@ -4159,7 +4158,7 @@ class _AddDripPageState extends State<AddDripPage> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Acreage: ${_formatNumber(_acres)} acres',
+                          'Acreage: ${formatNumber(_acres)} acres',
                           style: const TextStyle(
                             fontSize: 16,
                             color: Color(0xFF00695C),
@@ -4332,7 +4331,7 @@ class _AddSprayPageState extends State<AddSprayPage> {
         spray['spray_date'].toString(),
       );
 
-      _waterController.text = _formatNumber(
+      _waterController.text = formatNumber(
         (spray['water'] as num).toDouble(),
       );
 
@@ -4412,7 +4411,7 @@ class _AddSprayPageState extends State<AddSprayPage> {
     final controller = TextEditingController(
       text: chemical.dosage == 0
           ? ''
-          : _formatNumber(chemical.dosage),
+          : formatNumber(chemical.dosage),
     );
 
     controller.addListener(() {
@@ -4599,7 +4598,7 @@ class _AddSprayPageState extends State<AddSprayPage> {
                       prefixIcon: Icon(Icons.calendar_today),
                     ),
                     child: Text(
-                      _formatDate(_selectedDate),
+                      formatDate(_selectedDate),
                     ),
                   ),
                 ),
@@ -4778,7 +4777,7 @@ class _AddSprayPageState extends State<AddSprayPage> {
                               ),
                               const SizedBox(height: 8),
                               Text(
-                                'Cost: ${_formatNumber(_water)} × ${_formatNumber(chemical.dosage)} × ₹${chemical.price.toStringAsFixed(2)} = ₹${(_water * chemical.dosage * chemical.price).toStringAsFixed(2)}',
+                                'Cost: ${formatNumber(_water)} × ${formatNumber(chemical.dosage)} × ₹${chemical.price.toStringAsFixed(2)} = ₹${(_water * chemical.dosage * chemical.price).toStringAsFixed(2)}',
                                 style: const TextStyle(
                                   fontWeight: FontWeight.bold,
                                   color: Color(0xFF0D47A1),
@@ -4805,7 +4804,7 @@ class _AddSprayPageState extends State<AddSprayPage> {
                           CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Water: ${_formatNumber(_water)} L',
+                          'Water: ${formatNumber(_water)} L',
                           style: const TextStyle(
                             fontSize: 16,
                             color: Color(0xFF0D47A1),
