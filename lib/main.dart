@@ -358,6 +358,83 @@ class AppDatabase {
   }
 
   // ------------------------------------------------------------
+  // FARM DASHBOARD (read-only helpers; no schema changes)
+  // ------------------------------------------------------------
+
+  /// Returns the most recent spray for a plot (or null if none), using the
+  /// same computed rows as [getSpraysForPlot].
+  Future<Map<String, dynamic>?> getLastSprayForPlot(int plotId) async {
+    final sprays = await getSpraysForPlot(plotId);
+    return sprays.isEmpty ? null : sprays.first;
+  }
+
+  /// Merges recent sprays, drip applications, labour, other expenses and
+  /// earnings into a single "recent activity" feed for the Home dashboard.
+  /// Purely additive/read-only: does not touch any existing table or data.
+  Future<List<Map<String, dynamic>>> getRecentActivity({int limit = 6}) async {
+    final db = await database;
+    final plots = await getPlots();
+    final plotTitle = <int, String>{
+      for (final p in plots) p['id'] as int: p['title'].toString(),
+    };
+
+    final items = <Map<String, dynamic>>[];
+
+    final sprays = await db.query('sprays', orderBy: 'created_at DESC', limit: limit);
+    for (final r in sprays) {
+      items.add({
+        'type': 'spray',
+        'title': 'Spray record added',
+        'subtitle': plotTitle[r['plot_id'] as int] ?? '',
+        'created_at': r['created_at'].toString(),
+      });
+    }
+
+    final drips = await db.query('drip_applications', orderBy: 'created_at DESC', limit: limit);
+    for (final r in drips) {
+      items.add({
+        'type': 'drip',
+        'title': 'Drip application added',
+        'subtitle': plotTitle[r['plot_id'] as int] ?? '',
+        'created_at': r['created_at'].toString(),
+      });
+    }
+
+    final labour = await db.query('labour_records', orderBy: 'created_at DESC', limit: limit);
+    for (final r in labour) {
+      items.add({
+        'type': 'labour',
+        'title': 'Labour recorded',
+        'subtitle': plotTitle[r['plot_id'] as int] ?? '',
+        'created_at': r['created_at'].toString(),
+      });
+    }
+
+    final other = await db.query('other_expenses', orderBy: 'created_at DESC', limit: limit);
+    for (final r in other) {
+      items.add({
+        'type': 'expense',
+        'title': 'Expense added',
+        'subtitle': plotTitle[r['plot_id'] as int] ?? '',
+        'created_at': r['created_at'].toString(),
+      });
+    }
+
+    final earnings = await db.query('earnings', orderBy: 'created_at DESC', limit: limit);
+    for (final r in earnings) {
+      items.add({
+        'type': 'earning',
+        'title': 'Earning added',
+        'subtitle': plotTitle[r['plot_id'] as int] ?? '',
+        'created_at': r['created_at'].toString(),
+      });
+    }
+
+    items.sort((a, b) => (b['created_at'] as String).compareTo(a['created_at'] as String));
+    return items.take(limit).toList();
+  }
+
+  // ------------------------------------------------------------
   // CHEMICALS
   // ------------------------------------------------------------
 
@@ -1337,15 +1414,21 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   int _currentIndex = 0;
 
-  final List<Widget> _pages = const [
-    PlotHistoryPage(),
-    ChemicalsPage(),
-  ];
+  void _goToCropsTab() {
+    setState(() => _currentIndex = 1);
+  }
 
   @override
   Widget build(BuildContext context) {
+    final pages = <Widget>[
+      FarmDashboardPage(onViewCrops: _goToCropsTab),
+      const PlotHistoryPage(),
+      const ChemicalsPage(),
+      const MorePage(),
+    ];
+
     return Scaffold(
-      body: _pages[_currentIndex],
+      body: pages[_currentIndex],
       bottomNavigationBar: NavigationBar(
         selectedIndex: _currentIndex,
         onDestinationSelected: (index) {
@@ -1360,10 +1443,802 @@ class _HomePageState extends State<HomePage> {
             label: 'Home',
           ),
           NavigationDestination(
+            icon: Icon(Icons.grass_outlined),
+            selectedIcon: Icon(Icons.grass),
+            label: 'Crops',
+          ),
+          NavigationDestination(
             icon: Icon(Icons.science_outlined),
             selectedIcon: Icon(Icons.science),
             label: 'Chemicals',
           ),
+          NavigationDestination(
+            icon: Icon(Icons.more_horiz_outlined),
+            selectedIcon: Icon(Icons.more_horiz),
+            label: 'More',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================
+// FARM DASHBOARD (new FarmBook Home tab)
+// ============================================================
+
+/// Shows a plot picker (bottom sheet) and returns the chosen plot, or null
+/// if the user cancelled. If there is exactly one plot, it is returned
+/// immediately without showing a picker.
+Future<Map<String, dynamic>?> _fbPickPlot(
+  BuildContext context,
+  List<Map<String, dynamic>> plots, {
+  String title = 'Choose a crop / plot',
+}) async {
+  if (plots.isEmpty) return null;
+  if (plots.length == 1) return plots.first;
+
+  return showModalBottomSheet<Map<String, dynamic>>(
+    context: context,
+    showDragHandle: true,
+    builder: (sheetContext) => SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                title,
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                ),
+              ),
+            ),
+          ),
+          Flexible(
+            child: ListView.builder(
+              shrinkWrap: true,
+              itemCount: plots.length,
+              itemBuilder: (_, i) {
+                final plot = plots[i];
+                return ListTile(
+                  leading: const Icon(Icons.grass),
+                  title: Text(plot['title'].toString()),
+                  subtitle: plot['crop_variety'].toString().isEmpty
+                      ? null
+                      : Text(plot['crop_variety'].toString()),
+                  onTap: () => Navigator.pop(sheetContext, plot),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 8),
+        ],
+      ),
+    ),
+  );
+}
+
+/// If there are no plots yet, shows a snackbar prompting the user to add
+/// one first. Returns true if it's safe to continue (a plot exists).
+Future<bool> _fbRequirePlots(
+  BuildContext context,
+  List<Map<String, dynamic>> plots,
+  VoidCallback onAddCropRequested,
+) async {
+  if (plots.isNotEmpty) return true;
+  ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(content: Text('Add a crop / plot first.')),
+  );
+  onAddCropRequested();
+  return false;
+}
+
+class FarmDashboardPage extends StatefulWidget {
+  const FarmDashboardPage({super.key, required this.onViewCrops});
+
+  /// Called when the user wants to jump to the Crops tab (e.g. "View all"
+  /// or when there are no crops yet).
+  final VoidCallback onViewCrops;
+
+  @override
+  State<FarmDashboardPage> createState() => _FarmDashboardPageState();
+}
+
+class _FarmDashboardPageState extends State<FarmDashboardPage> {
+  bool _loading = true;
+  List<Map<String, dynamic>> _plots = [];
+  List<Map<String, dynamic>> _recentActivity = [];
+  final Map<int, Map<String, dynamic>?> _lastSprayByPlot = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    if (mounted) setState(() => _loading = true);
+    final plots = await AppDatabase.instance.getPlots();
+    final activity = await AppDatabase.instance.getRecentActivity(limit: 6);
+
+    // Only look up "last spray" for a handful of plots shown on the
+    // dashboard, to keep this screen light.
+    final lastSprays = <int, Map<String, dynamic>?>{};
+    for (final plot in plots.take(6)) {
+      final id = plot['id'] as int;
+      lastSprays[id] = await AppDatabase.instance.getLastSprayForPlot(id);
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _plots = plots;
+      _recentActivity = activity;
+      _lastSprayByPlot
+        ..clear()
+        ..addAll(lastSprays);
+      _loading = false;
+    });
+  }
+
+  String _greeting() {
+    final hour = DateTime.now().hour;
+    if (hour < 12) return 'Good morning 👋';
+    if (hour < 17) return 'Good afternoon 👋';
+    return 'Good evening 👋';
+  }
+
+  /// Groups plots by crop variety (falling back to the plot title when no
+  /// crop variety is set) so the dashboard can show one card per crop
+  /// instead of one per individual plot.
+  List<_FbCropGroup> _cropGroups() {
+    final groups = <String, _FbCropGroup>{};
+    for (final plot in _plots) {
+      final crop = plot['crop_variety'].toString().trim();
+      final key = crop.isEmpty ? plot['title'].toString() : crop;
+      groups.putIfAbsent(key, () => _FbCropGroup(name: key));
+      groups[key]!.plots.add(plot);
+    }
+    return groups.values.toList();
+  }
+
+  Future<void> _openPlot(Map<String, dynamic> plot) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => PlotOverviewPage(
+          plotId: plot['id'] as int,
+          plotTitle: plot['title'].toString(),
+          plotName: plot['plot_name'].toString(),
+          cropVariety: plot['crop_variety'].toString(),
+        ),
+      ),
+    );
+    await _load();
+  }
+
+  Future<void> _quickAction(String action) async {
+    final ok = await _fbRequirePlots(context, _plots, widget.onViewCrops);
+    if (!ok) return;
+    final plot = await _fbPickPlot(context, _plots);
+    if (plot == null || !mounted) return;
+
+    final id = plot['id'] as int;
+    final title = plot['title'].toString();
+    final name = plot['plot_name'].toString();
+    final crop = plot['crop_variety'].toString();
+
+    Widget page;
+    switch (action) {
+      case 'expense':
+        page = OtherExpensesPage(plotId: id, plotTitle: title);
+        break;
+      case 'earning':
+        page = EarningsPage(plotId: id, plotTitle: title);
+        break;
+      case 'labour':
+        page = LabourPage(plotId: id, plotTitle: title);
+        break;
+      case 'spray':
+      default:
+        page = PlotSpraysPage(
+          plotId: id,
+          plotTitle: title,
+          plotName: name,
+          cropVariety: crop,
+        );
+    }
+
+    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => page));
+    await _load();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const green = Color(0xFF2E7D32);
+
+    if (_loading) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+
+    final groups = _cropGroups();
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('FarmBook')),
+      body: RefreshIndicator(
+        onRefresh: _load,
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+          children: [
+            Text(
+              _greeting(),
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              'Keep farming, keep growing.',
+              style: TextStyle(color: Colors.grey),
+            ),
+            const SizedBox(height: 16),
+            Card(
+              color: const Color(0xFFE8F5E9),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              child: const Padding(
+                padding: EdgeInsets.all(16),
+                child: Row(
+                  children: [
+                    Icon(Icons.agriculture, color: green, size: 32),
+                    SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        'Manage your crops, expenses, labour, sprays and more — all in one place.',
+                        style: TextStyle(color: Color(0xFF1B5E20)),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 24),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text(
+                  'Your crops',
+                  style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+                ),
+                TextButton(
+                  onPressed: widget.onViewCrops,
+                  child: const Text('View all'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            if (groups.isEmpty)
+              _FbEmptyCrops(onAddCrop: widget.onViewCrops)
+            else ...[
+              for (final group in groups.take(3))
+                _FbCropCard(
+                  group: group,
+                  lastSpray: _lastSprayByPlot[group.plots.first['id'] as int],
+                  onTap: () => _openPlot(group.plots.first),
+                ),
+              const SizedBox(height: 4),
+              OutlinedButton.icon(
+                onPressed: widget.onViewCrops,
+                icon: const Icon(Icons.add),
+                label: const Text('Add crop / plot'),
+              ),
+            ],
+            const SizedBox(height: 28),
+            const Text(
+              'Quick actions',
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: _FbQuickAction(
+                    icon: Icons.receipt_long,
+                    label: 'Expense',
+                    onTap: () => _quickAction('expense'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _FbQuickAction(
+                    icon: Icons.payments,
+                    label: 'Earning',
+                    onTap: () => _quickAction('earning'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: _FbQuickAction(
+                    icon: Icons.science,
+                    label: 'Spray',
+                    onTap: () => _quickAction('spray'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _FbQuickAction(
+                    icon: Icons.groups,
+                    label: 'Labour',
+                    onTap: () => _quickAction('labour'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 28),
+            const Text(
+              'Recent activity',
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            if (_recentActivity.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 12),
+                child: Text(
+                  'No farm activity yet. Add a spray, expense or earning to see it here.',
+                  style: TextStyle(color: Colors.grey),
+                ),
+              )
+            else
+              ..._recentActivity.map((item) => _FbActivityTile(item: item)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FbCropGroup {
+  _FbCropGroup({required this.name});
+  final String name;
+  final List<Map<String, dynamic>> plots = [];
+}
+
+class _FbEmptyCrops extends StatelessWidget {
+  const _FbEmptyCrops({required this.onAddCrop});
+  final VoidCallback onAddCrop;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          children: [
+            const Icon(Icons.eco_outlined, size: 40, color: Colors.grey),
+            const SizedBox(height: 10),
+            const Text(
+              'No crops yet',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Add your first crop / plot to start tracking sprays, expenses and earnings.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.grey),
+            ),
+            const SizedBox(height: 14),
+            FilledButton.icon(
+              onPressed: onAddCrop,
+              icon: const Icon(Icons.add),
+              label: const Text('Add crop / plot'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FbCropCard extends StatelessWidget {
+  const _FbCropCard({
+    required this.group,
+    required this.lastSpray,
+    required this.onTap,
+  });
+
+  final _FbCropGroup group;
+  final Map<String, dynamic>? lastSpray;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final plotCount = group.plots.length;
+    return Card(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      margin: const EdgeInsets.only(bottom: 10),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const CircleAvatar(
+                    backgroundColor: Color(0xFFE8F5E9),
+                    child: Icon(Icons.grass, color: Color(0xFF2E7D32)),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          group.name,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                          ),
+                        ),
+                        Text(
+                          plotCount == 1 ? '1 plot' : '$plotCount plots',
+                          style: const TextStyle(color: Colors.grey),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Icon(Icons.chevron_right),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  const Text('🌱 Growing', style: TextStyle(color: Color(0xFF2E7D32))),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Text(
+                      lastSpray == null
+                          ? '🧪 No sprays recorded yet'
+                          : '🧪 Last spray: ${_formatDate(DateTime.parse(lastSpray!['spray_date'].toString()))}',
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: Colors.grey),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _FbQuickAction extends StatelessWidget {
+  const _FbQuickAction({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 16),
+          child: Column(
+            children: [
+              Icon(icon, color: const Color(0xFF2E7D32)),
+              const SizedBox(height: 6),
+              Text(label, style: const TextStyle(fontWeight: FontWeight.w600)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _FbActivityTile extends StatelessWidget {
+  const _FbActivityTile({required this.item});
+  final Map<String, dynamic> item;
+
+  IconData get _icon {
+    switch (item['type']) {
+      case 'spray':
+        return Icons.science;
+      case 'drip':
+        return Icons.water_drop;
+      case 'labour':
+        return Icons.groups;
+      case 'expense':
+        return Icons.receipt_long;
+      case 'earning':
+        return Icons.payments;
+      default:
+        return Icons.circle;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final subtitle = item['subtitle']?.toString() ?? '';
+    DateTime? created;
+    try {
+      created = DateTime.parse(item['created_at'].toString());
+    } catch (_) {
+      created = null;
+    }
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: CircleAvatar(
+        backgroundColor: const Color(0xFFE8F5E9),
+        child: Icon(_icon, color: const Color(0xFF2E7D32), size: 20),
+      ),
+      title: Text(item['title'].toString()),
+      subtitle: Text(
+        subtitle.isEmpty
+            ? (created == null ? '' : _formatDate(created))
+            : (created == null ? subtitle : '$subtitle • ${_formatDate(created)}'),
+      ),
+    );
+  }
+}
+
+// ============================================================
+// MORE PAGE
+// ============================================================
+
+class MorePage extends StatefulWidget {
+  const MorePage({super.key});
+
+  @override
+  State<MorePage> createState() => _MorePageState();
+}
+
+class _MorePageState extends State<MorePage> {
+  Future<void> _openPerPlotPage(String label, Widget Function(Map<String, dynamic>) builder) async {
+    final plots = await AppDatabase.instance.getPlots();
+    if (!mounted) return;
+    if (plots.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Add a crop / plot first to use $label.')),
+      );
+      return;
+    }
+    final plot = await _fbPickPlot(context, plots, title: 'Choose a crop / plot');
+    if (plot == null || !mounted) return;
+    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => builder(plot)));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('More')),
+      body: ListView(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        children: [
+          ListTile(
+            leading: const Icon(Icons.payments_outlined),
+            title: const Text('Earnings'),
+            subtitle: const Text('Record what you sold from a crop.'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => _openPerPlotPage(
+              'Earnings',
+              (plot) => EarningsPage(
+                plotId: plot['id'] as int,
+                plotTitle: plot['title'].toString(),
+              ),
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.receipt_long_outlined),
+            title: const Text('Expenses'),
+            subtitle: const Text('Other farm expenses by crop / plot.'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => _openPerPlotPage(
+              'Expenses',
+              (plot) => OtherExpensesPage(
+                plotId: plot['id'] as int,
+                plotTitle: plot['title'].toString(),
+              ),
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.groups_outlined),
+            title: const Text('Labour'),
+            subtitle: const Text('Track workers, days and wages.'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => _openPerPlotPage(
+              'Labour',
+              (plot) => LabourPage(
+                plotId: plot['id'] as int,
+                plotTitle: plot['title'].toString(),
+              ),
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.analytics_outlined),
+            title: const Text('Reports'),
+            subtitle: const Text('Farm-wide totals and profit.'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const FarmOverviewPage()),
+            ),
+          ),
+          const Divider(),
+          ListTile(
+            leading: const Icon(Icons.backup_outlined),
+            title: const Text('Backup & Restore'),
+            subtitle: const Text('Save or restore your farm data.'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const BackupRestorePage()),
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.settings_outlined),
+            title: const Text('Settings'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const SettingsPage()),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class BackupRestorePage extends StatefulWidget {
+  const BackupRestorePage({super.key});
+
+  @override
+  State<BackupRestorePage> createState() => _BackupRestorePageState();
+}
+
+class _BackupRestorePageState extends State<BackupRestorePage> {
+  bool _busy = false;
+
+  Future<void> _exportHistory() async {
+    setState(() => _busy = true);
+    try {
+      final payload = await AppDatabase.instance.exportHistory();
+      final jsonText = const JsonEncoder.withIndent('  ').convert(payload);
+      final fileName = 'FarmBook_history_${DateTime.now().millisecondsSinceEpoch}.json';
+      final bytes = Uint8List.fromList(utf8.encode(jsonText));
+      final path = await FilePicker.platform.saveFile(
+        dialogTitle: 'Backup FarmBook Data',
+        fileName: fileName,
+        bytes: bytes,
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+      if (path == null) return;
+      if (!mounted) return;
+      await Share.shareXFiles([XFile(path)], text: 'FarmBook backup');
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Backup failed: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _importHistory() async {
+    setState(() => _busy = true);
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+        withData: false,
+      );
+      if (result == null || result.files.single.path == null) return;
+
+      final path = result.files.single.path!;
+      final text = await File(path).readAsString();
+      final decoded = jsonDecode(text);
+
+      if (decoded is! Map<String, dynamic>) {
+        throw const FormatException('Invalid FarmBook backup.');
+      }
+      if (decoded['format']?.toString() != 'FarmBook plot backup' &&
+          decoded['format']?.toString() != 'FarmBook spray history backup' &&
+          decoded['format']?.toString() != 'SprayBook spray history backup') {
+        throw const FormatException('This file is not a FarmBook backup.');
+      }
+
+      if (!mounted) return;
+      final shouldRestore = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Restore farm data?'),
+          content: const Text(
+            'The backup will be added to your existing data. '
+            'Existing data will not be deleted. Exact duplicate records '
+            'will be skipped.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Restore'),
+            ),
+          ],
+        ),
+      );
+      if (shouldRestore != true) return;
+
+      final counts = await AppDatabase.instance.restoreHistory(decoded);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Restore complete: ${counts['plots_added'] ?? 0} plots, '
+            '${counts['sprays_added'] ?? 0} sprays, ${counts['drips_added'] ?? 0} drips, '
+            '${counts['labour_added'] ?? 0} labour, ${counts['other_added'] ?? 0} expenses, '
+            '${counts['earnings_added'] ?? 0} earnings added'
+            '${(counts['skipped'] ?? 0) == 0 ? '' : ', ${counts['skipped']} skipped'}.',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Restore failed: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Backup & Restore')),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          const Text(
+            'Your farm data stays on this phone. Use backup to save a copy, '
+            'or restore to bring data back from a previous backup file.',
+            style: TextStyle(color: Colors.grey),
+          ),
+          const SizedBox(height: 20),
+          FilledButton.icon(
+            onPressed: _busy ? null : _exportHistory,
+            icon: const Icon(Icons.upload_file),
+            label: const Text('Backup FarmBook data'),
+          ),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: _busy ? null : _importHistory,
+            icon: const Icon(Icons.download),
+            label: const Text('Restore from backup'),
+          ),
+          if (_busy) ...[
+            const SizedBox(height: 20),
+            const Center(child: CircularProgressIndicator()),
+          ],
         ],
       ),
     );
@@ -3066,26 +3941,357 @@ class _OtherExpensesPageState extends State<OtherExpensesPage> {
   @override Widget build(BuildContext context) { final total=rows.fold<double>(0,(sum,row)=>sum+(row['amount']as num).toDouble()); return Scaffold(appBar:AppBar(title:Text('${widget.plotTitle} • Expenses')),floatingActionButton:FloatingActionButton.extended(onPressed:()=>_form(),backgroundColor:const Color(0xFF0D47A1),foregroundColor:Colors.white,icon:const Icon(Icons.add),label:const Text('Add expense')),body:loading?const Center(child:CircularProgressIndicator()):ListView(padding:const EdgeInsets.fromLTRB(12,12,12,100),children:[Card(color:const Color(0xFFE3F2FD),child:ListTile(title:const Text('Total Other Expenses'),trailing:Text(_fbMoney(total),style:const TextStyle(fontSize:19,fontWeight:FontWeight.bold,color:Color(0xFF0D47A1))))),...rows.map((row)=>Card(child:ListTile(title:Text(row['description'].toString()),subtitle:Text('${row['category']} • ${_formatDate(DateTime.parse(row['expense_date'].toString()))}'),trailing:Row(mainAxisSize:MainAxisSize.min,children:[Text(_fbMoney((row['amount']as num).toDouble())),PopupMenuButton<String>(onSelected:(v){if(v=='edit'){_form(row);}else{_delete(row['id']as int);}},itemBuilder:(_)=>const[PopupMenuItem(value:'edit',child:Text('Edit')),PopupMenuItem(value:'delete',child:Text('Delete'))])]))))])); }
 }
 
+/// Standard unit choices for earnings. "other" allows a free-text unit.
+const List<String> kFbEarningUnits = [
+  'kg', 'quintal', 'ton', 'box', 'crate', 'bag', 'piece', 'litre', 'other',
+];
+
 class EarningsPage extends StatefulWidget {
   const EarningsPage({super.key, required this.plotId, required this.plotTitle});
   final int plotId; final String plotTitle;
   @override State<EarningsPage> createState() => _EarningsPageState();
 }
+
 class _EarningsPageState extends State<EarningsPage> {
-  List<Map<String,dynamic>> rows=[]; bool loading=true;
-  @override void initState(){super.initState();_load();}
-  Future<void> _load()async{rows=await AppDatabase.instance.getEarnings(widget.plotId);if(mounted)setState(()=>loading=false);}
-  Future<void> _form([Map<String,dynamic>? row])async{
-    final desc=TextEditingController(text:row?['description']?.toString()??'');
-    final qty=TextEditingController(text:row==null?'':(row['quantity']as num).toString());
-    final unit=TextEditingController(text:row?['unit']?.toString()??'kg');
-    final price=TextEditingController(text:row==null?'':(row['price']as num).toString());
-    final amount=TextEditingController(text:row==null?'':(row['amount']as num).toString());
-    final notes=TextEditingController(text:row?['notes']?.toString()??'');
-    DateTime date=row==null?DateTime.now():DateTime.parse(row['earning_date'].toString());
-    await showDialog<void>(context:context,builder:(dc)=>StatefulBuilder(builder:(dc,set)=>AlertDialog(title:Text(row==null?'Add earning':'Edit earning'),content:SingleChildScrollView(child:Column(mainAxisSize:MainAxisSize.min,children:[TextField(controller:desc,decoration:const InputDecoration(labelText:'Description')),TextField(controller:qty,keyboardType:const TextInputType.numberWithOptions(decimal:true),decoration:const InputDecoration(labelText:'Quantity')),TextField(controller:unit,decoration:const InputDecoration(labelText:'Unit (kg, box, etc.)')),TextField(controller:price,keyboardType:const TextInputType.numberWithOptions(decimal:true),decoration:const InputDecoration(labelText:'Price / unit (₹)')),TextField(controller:amount,keyboardType:const TextInputType.numberWithOptions(decimal:true),decoration:const InputDecoration(labelText:'Total earning (₹)')),ListTile(contentPadding:EdgeInsets.zero,leading:const Icon(Icons.calendar_today),title:const Text('Date'),subtitle:Text(_formatDate(date)),onTap:()async{final picked=await showDatePicker(context:dc,initialDate:date,firstDate:DateTime(2000),lastDate:DateTime(2100));if(picked!=null)set(()=>date=picked);}),TextField(controller:notes,maxLines:2,decoration:const InputDecoration(labelText:'Notes'))])),actions:[TextButton(onPressed:()=>Navigator.pop(dc),child:const Text('Cancel')),FilledButton(onPressed:()async{final value=double.tryParse(amount.text.trim());if(desc.text.trim().isEmpty||value==null||value<0)return;final q=double.tryParse(qty.text.trim())??0;final p=double.tryParse(price.text.trim())??0;if(row==null){await AppDatabase.instance.addEarning(plotId:widget.plotId,date:date,description:desc.text,quantity:q,unit:unit.text,price:p,amount:value,notes:notes.text);}else{await AppDatabase.instance.updateEarning(id:row['id']as int,date:date,description:desc.text,quantity:q,unit:unit.text,price:p,amount:value,notes:notes.text);}if(dc.mounted)Navigator.pop(dc);await _load();},child:const Text('Save'))])));desc.dispose();qty.dispose();unit.dispose();price.dispose();amount.dispose();notes.dispose();}
-  Future<void> _delete(int id)async{await AppDatabase.instance.deleteEarning(id);await _load();}
-  @override Widget build(BuildContext context){final total=rows.fold<double>(0,(sum,row)=>sum+(row['amount']as num).toDouble());return Scaffold(appBar:AppBar(title:Text('${widget.plotTitle} • Earnings')),floatingActionButton:FloatingActionButton.extended(onPressed:()=>_form(),backgroundColor:const Color(0xFF0D47A1),foregroundColor:Colors.white,icon:const Icon(Icons.add),label:const Text('Add earning')),body:loading?const Center(child:CircularProgressIndicator()):ListView(padding:const EdgeInsets.fromLTRB(12,12,12,100),children:[Card(color:const Color(0xFFE3F2FD),child:ListTile(title:const Text('Total Earnings'),trailing:Text(_fbMoney(total),style:const TextStyle(fontSize:19,fontWeight:FontWeight.bold,color:Color(0xFF0D47A1))))),...rows.map((row)=>Card(child:ListTile(title:Text(row['description'].toString(),style:const TextStyle(fontWeight:FontWeight.bold)),subtitle:Text('${_formatDate(DateTime.parse(row['earning_date'].toString()))} • ${(row['quantity']as num)} ${row['unit']} × ₹${(row['price']as num).toStringAsFixed(2)}'),trailing:Row(mainAxisSize:MainAxisSize.min,children:[Text(_fbMoney((row['amount']as num).toDouble())),PopupMenuButton<String>(onSelected:(v){if(v=='edit'){_form(row);}else{_delete(row['id']as int);}},itemBuilder:(_)=>const[PopupMenuItem(value:'edit',child:Text('Edit')),PopupMenuItem(value:'delete',child:Text('Delete'))])]))))]));}
+  List<Map<String, dynamic>> rows = [];
+  List<Map<String, dynamic>> _plots = [];
+  bool loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    rows = await AppDatabase.instance.getEarnings(widget.plotId);
+    _plots = await AppDatabase.instance.getPlots();
+    if (mounted) setState(() => loading = false);
+  }
+
+  /// An entry is treated as "total only" (no quantity × rate breakdown)
+  /// when both quantity and price are zero, which is how [addEarning]
+  /// stores entries created in that mode.
+  bool _isTotalOnly(Map<String, dynamic> row) {
+    final qty = (row['quantity'] as num).toDouble();
+    final price = (row['price'] as num).toDouble();
+    return qty == 0 && price == 0;
+  }
+
+  Future<void> _form([Map<String, dynamic>? row]) async {
+    final desc = TextEditingController(text: row?['description']?.toString() ?? '');
+    final notes = TextEditingController(text: row?['notes']?.toString() ?? '');
+
+    final existingQty = row == null ? 0.0 : (row['quantity'] as num).toDouble();
+    final existingPrice = row == null ? 0.0 : (row['price'] as num).toDouble();
+    final existingAmount = row == null ? 0.0 : (row['amount'] as num).toDouble();
+    final existingUnit = row?['unit']?.toString() ?? '';
+
+    bool totalOnly = row == null ? true : _isTotalOnly(row);
+
+    final totalCtrl = TextEditingController(
+      text: totalOnly && existingAmount != 0 ? _formatNumber(existingAmount) : '',
+    );
+    final qtyCtrl = TextEditingController(
+      text: !totalOnly && existingQty != 0 ? _formatNumber(existingQty) : '',
+    );
+    final rateCtrl = TextEditingController(
+      text: !totalOnly && existingPrice != 0 ? _formatNumber(existingPrice) : '',
+    );
+
+    String unit = kFbEarningUnits.contains(existingUnit)
+        ? existingUnit
+        : (existingUnit.isEmpty ? 'kg' : 'other');
+    final customUnitCtrl = TextEditingController(
+      text: unit == 'other' ? existingUnit : '',
+    );
+
+    DateTime date = row == null ? DateTime.now() : DateTime.parse(row['earning_date'].toString());
+
+    // Default plot selection: the plot this page is scoped to, if it still
+    // exists; otherwise the first available plot.
+    int selectedPlotId = widget.plotId;
+    if (_plots.isNotEmpty && _plots.every((p) => (p['id'] as int) != selectedPlotId)) {
+      selectedPlotId = _plots.first['id'] as int;
+    }
+
+    await showDialog<void>(
+      context: context,
+      builder: (dc) => StatefulBuilder(
+        builder: (dc, set) {
+          double calculatedTotal = 0;
+          if (!totalOnly) {
+            final q = double.tryParse(qtyCtrl.text.trim()) ?? 0;
+            final r = double.tryParse(rateCtrl.text.trim()) ?? 0;
+            calculatedTotal = q * r;
+          }
+          final unitLabel = unit == 'other'
+              ? (customUnitCtrl.text.trim().isEmpty ? 'unit' : customUnitCtrl.text.trim())
+              : unit;
+
+          return AlertDialog(
+            title: Text(row == null ? 'Add earning' : 'Edit earning'),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(
+                    controller: desc,
+                    decoration: const InputDecoration(labelText: 'Description'),
+                  ),
+                  const SizedBox(height: 12),
+                  if (row == null && _plots.length > 1) ...[
+                    DropdownButtonFormField<int>(
+                      value: selectedPlotId,
+                      decoration: const InputDecoration(labelText: 'Crop / Plot (optional)'),
+                      items: _plots
+                          .map((p) => DropdownMenuItem<int>(
+                                value: p['id'] as int,
+                                child: Text(
+                                  p['title'].toString(),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ))
+                          .toList(),
+                      onChanged: (v) {
+                        if (v != null) set(() => selectedPlotId = v);
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+                  const Text('How do you want to enter this?'),
+                  RadioListTile<bool>(
+                    contentPadding: EdgeInsets.zero,
+                    dense: true,
+                    title: const Text('Enter total directly'),
+                    value: true,
+                    groupValue: totalOnly,
+                    onChanged: (v) => set(() => totalOnly = v ?? true),
+                  ),
+                  RadioListTile<bool>(
+                    contentPadding: EdgeInsets.zero,
+                    dense: true,
+                    title: const Text('Calculate from quantity × rate'),
+                    value: false,
+                    groupValue: totalOnly,
+                    onChanged: (v) => set(() => totalOnly = v ?? false),
+                  ),
+                  const SizedBox(height: 8),
+                  if (totalOnly)
+                    TextField(
+                      controller: totalCtrl,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: const InputDecoration(labelText: 'Total earning (₹)'),
+                    )
+                  else ...[
+                    TextField(
+                      controller: qtyCtrl,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: const InputDecoration(labelText: 'Quantity'),
+                      onChanged: (_) => set(() {}),
+                    ),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      value: unit,
+                      decoration: const InputDecoration(labelText: 'Unit'),
+                      items: kFbEarningUnits
+                          .map((u) => DropdownMenuItem(value: u, child: Text(u)))
+                          .toList(),
+                      onChanged: (v) {
+                        if (v != null) set(() => unit = v);
+                      },
+                    ),
+                    if (unit == 'other') ...[
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: customUnitCtrl,
+                        decoration: const InputDecoration(labelText: 'Custom unit'),
+                        onChanged: (_) => set(() {}),
+                      ),
+                    ],
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: rateCtrl,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: InputDecoration(labelText: 'Rate / $unitLabel (₹)'),
+                      onChanged: (_) => set(() {}),
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      'Total earning (calculated): ${_fbMoney(calculatedTotal)}',
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                  ],
+                  const SizedBox(height: 8),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.calendar_today),
+                    title: const Text('Date'),
+                    subtitle: Text(_formatDate(date)),
+                    onTap: () async {
+                      final picked = await showDatePicker(
+                        context: dc,
+                        initialDate: date,
+                        firstDate: DateTime(2000),
+                        lastDate: DateTime(2100),
+                      );
+                      if (picked != null) set(() => date = picked);
+                    },
+                  ),
+                  TextField(
+                    controller: notes,
+                    maxLines: 2,
+                    decoration: const InputDecoration(labelText: 'Notes (optional)'),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(dc), child: const Text('Cancel')),
+              FilledButton(
+                onPressed: () async {
+                  if (desc.text.trim().isEmpty) return;
+
+                  double q = 0, p = 0, value;
+                  String savedUnit = '';
+
+                  if (totalOnly) {
+                    final t = double.tryParse(totalCtrl.text.trim());
+                    if (t == null || t < 0) return;
+                    value = t;
+                  } else {
+                    final parsedQty = double.tryParse(qtyCtrl.text.trim());
+                    final parsedRate = double.tryParse(rateCtrl.text.trim());
+                    if (parsedQty == null || parsedQty <= 0 || parsedRate == null || parsedRate < 0) {
+                      return;
+                    }
+                    q = parsedQty;
+                    p = parsedRate;
+                    savedUnit = unit == 'other' ? customUnitCtrl.text.trim() : unit;
+                    if (savedUnit.isEmpty) return;
+                    value = q * p;
+                  }
+
+                  if (row == null) {
+                    await AppDatabase.instance.addEarning(
+                      plotId: selectedPlotId,
+                      date: date,
+                      description: desc.text,
+                      quantity: q,
+                      unit: savedUnit,
+                      price: p,
+                      amount: value,
+                      notes: notes.text,
+                    );
+                  } else {
+                    await AppDatabase.instance.updateEarning(
+                      id: row['id'] as int,
+                      date: date,
+                      description: desc.text,
+                      quantity: q,
+                      unit: savedUnit,
+                      price: p,
+                      amount: value,
+                      notes: notes.text,
+                    );
+                  }
+                  if (dc.mounted) Navigator.pop(dc);
+                  await _load();
+                },
+                child: const Text('Save'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+
+    desc.dispose();
+    notes.dispose();
+    totalCtrl.dispose();
+    qtyCtrl.dispose();
+    rateCtrl.dispose();
+    customUnitCtrl.dispose();
+  }
+
+  Future<void> _delete(int id) async {
+    await AppDatabase.instance.deleteEarning(id);
+    await _load();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final total = rows.fold<double>(0, (sum, row) => sum + (row['amount'] as num).toDouble());
+    return Scaffold(
+      appBar: AppBar(title: Text('${widget.plotTitle} • Earnings')),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => _form(),
+        backgroundColor: const Color(0xFF0D47A1),
+        foregroundColor: Colors.white,
+        icon: const Icon(Icons.add),
+        label: const Text('Add earning'),
+      ),
+      body: loading
+          ? const Center(child: CircularProgressIndicator())
+          : ListView(
+              padding: const EdgeInsets.fromLTRB(12, 12, 12, 100),
+              children: [
+                Card(
+                  color: const Color(0xFFE3F2FD),
+                  child: ListTile(
+                    title: const Text('Total Earnings'),
+                    trailing: Text(
+                      _fbMoney(total),
+                      style: const TextStyle(
+                        fontSize: 19,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF0D47A1),
+                      ),
+                    ),
+                  ),
+                ),
+                ...rows.map((row) {
+                  final totalOnly = _isTotalOnly(row);
+                  final breakdown = totalOnly
+                      ? '— | —'
+                      : '${_formatNumber((row['quantity'] as num).toDouble())} '
+                          '${row['unit']} × ₹${(row['price'] as num).toStringAsFixed(2)}';
+                  return Card(
+                    child: ListTile(
+                      title: Text(
+                        row['description'].toString(),
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      subtitle: Text(
+                        '${_formatDate(DateTime.parse(row['earning_date'].toString()))} • $breakdown',
+                      ),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(_fbMoney((row['amount'] as num).toDouble())),
+                          PopupMenuButton<String>(
+                            onSelected: (v) {
+                              if (v == 'edit') {
+                                _form(row);
+                              } else {
+                                _delete(row['id'] as int);
+                              }
+                            },
+                            itemBuilder: (_) => const [
+                              PopupMenuItem(value: 'edit', child: Text('Edit')),
+                              PopupMenuItem(value: 'delete', child: Text('Delete')),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                }),
+              ],
+            ),
+    );
+  }
 }
 
 class FarmOverviewPage extends StatefulWidget { const FarmOverviewPage({super.key}); @override State<FarmOverviewPage> createState()=>_FarmOverviewPageState(); }
