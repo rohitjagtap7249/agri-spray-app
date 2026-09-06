@@ -59,17 +59,17 @@ jobs:
         run: |
           sed -i 's/android:label="[^"]*"/android:label="FarmBook"/' android/app/src/main/AndroidManifest.xml
 
-      - name: Verify main.dart
+      - name: Verify models.dart
         run: |
           echo "Checking SelectedDripChemical..."
-          grep -n -A20 "class SelectedDripChemical" lib/main.dart
+          grep -n -A20 "class SelectedDripChemical" lib/models.dart
 
           echo ""
           echo "Checking unit field..."
           if grep -q "final String unit;" lib/main.dart; then
             echo "SelectedDripChemical.unit FOUND"
           else
-            echo "ERROR: SelectedDripChemical.unit is missing from lib/main.dart"
+            echo "ERROR: SelectedDripChemical.unit is missing from lib/models.dart"
             exit 1
           fi
 
