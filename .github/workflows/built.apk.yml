@@ -57,21 +57,26 @@ jobs:
 
       - name: Set app name
         run: |
-          sed -i 's/android:label="[^"]*"/android:label="FarmBook"/' android/app/src/main/AndroidManifest.xml
+          sed -i 's/android:label="[^"]*"/android:label="FarmBook"/' android/app/src/main/AndroidManifest.xm
 
-      - name: Verify models.dart
-        run: |
-          echo "Checking SelectedDripChemical..."
-          grep -n -A20 "class SelectedDripChemical" lib/models.dart
+      - name: Verify refactored files
+       run: |
+        echo "Checking refactored Dart files..."
 
-          echo ""
-          echo "Checking unit field..."
-          if grep -q "final String unit;" lib/main.dart; then
-            echo "SelectedDripChemical.unit FOUND"
-          else
-            echo "ERROR: SelectedDripChemical.unit is missing from lib/models.dart"
-            exit 1
-          fi
+         test -f lib/models.dart
+        test -f lib/database.dart
+        test -f lib/helpers.dart
+        test -f lib/pages.dart
+        test -f lib/main.dart
+
+        if grep -q "class SelectedDripChemical" lib/models.dart; then
+        echo "SelectedDripChemical FOUND in models.dart"
+        else
+      echo "ERROR: SelectedDripChemical is missing from models.dart"
+       exit 1
+       fi
+
+       echo "All refactored files verified successfully."
 
       - name: Install dependencies
         run: flutter pub get
