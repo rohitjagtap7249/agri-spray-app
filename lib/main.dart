@@ -1621,7 +1621,7 @@ class _FarmDashboardPageState extends State<FarmDashboardPage> {
 
   Future<void> _quickAction(String action) async {
     final ok = await _fbRequirePlots(context, _plots, widget.onViewCrops);
-    if (!ok) return;
+    if (!ok || !mounted) return;
     final plot = await _fbPickPlot(context, _plots);
     if (plot == null || !mounted) return;
 
