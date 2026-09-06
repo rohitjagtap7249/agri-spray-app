@@ -3313,7 +3313,7 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
               foregroundColor: Colors.white,
               onPressed: () async {
                 await AppDatabase.instance.setLastPage(widget.plotId, 'spray');
-                if (!mounted) return;
+                if (!context.mounted) return;
                 await Navigator.of(context).push(
                   MaterialPageRoute(
                     builder: (_) => AddSprayPage(
@@ -3334,7 +3334,7 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
               foregroundColor: Colors.white,
               onPressed: () async {
                 await AppDatabase.instance.setLastPage(widget.plotId, 'drip');
-                if (!mounted) return;
+                if (!context.mounted) return;
                 await Navigator.of(context).push(
                   MaterialPageRoute(
                     builder: (_) => AddDripPage(
