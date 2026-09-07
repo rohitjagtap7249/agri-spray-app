@@ -158,7 +158,6 @@ class FarmDashboardPage extends StatefulWidget {
 class _FarmDashboardPageState extends State<FarmDashboardPage> {
   bool _loading = true;
   List<Map<String, dynamic>> _plots = [];
-  List<Map<String, dynamic>> _recentActivity = [];
   final Map<int, Map<String, dynamic>?> _lastSprayByPlot = {};
 
   @override
@@ -170,7 +169,6 @@ class _FarmDashboardPageState extends State<FarmDashboardPage> {
   Future<void> _load() async {
     if (mounted) setState(() => _loading = true);
     final plots = await AppDatabase.instance.getPlots();
-    final activity = await AppDatabase.instance.getRecentActivity(limit: 6);
 
     // Only look up "last spray" for a handful of plots shown on the
     // dashboard, to keep this screen light.
@@ -183,7 +181,6 @@ class _FarmDashboardPageState extends State<FarmDashboardPage> {
     if (!mounted) return;
     setState(() {
       _plots = plots;
-      _recentActivity = activity;
       _lastSprayByPlot
         ..clear()
         ..addAll(lastSprays);
@@ -193,9 +190,9 @@ class _FarmDashboardPageState extends State<FarmDashboardPage> {
 
   String _greeting() {
     final hour = DateTime.now().hour;
-    if (hour < 12) return 'Good morning 👋';
-    if (hour < 17) return 'Good afternoon 👋';
-    return 'Good evening 👋';
+    if (hour < 12) return 'Good Morning! 👋';
+    if (hour < 17) return 'Good Afternoon! 👋';
+    return 'Good Evening! 👋';
   }
 
   /// Groups plots by crop variety (falling back to the plot title when no
@@ -227,6 +224,15 @@ class _FarmDashboardPageState extends State<FarmDashboardPage> {
   }
 
   Future<void> _quickAction(String action) async {
+    // Chemicals is not tied to a specific plot, so it skips the plot picker.
+    if (action == 'chemicals') {
+      await Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => const ChemicalsPage()),
+      );
+      await _load();
+      return;
+    }
+
     final ok = await _fbRequirePlots(context, _plots, widget.onViewCrops);
     if (!ok || !mounted) return;
     final plot = await _fbPickPlot(context, _plots);
@@ -248,6 +254,15 @@ class _FarmDashboardPageState extends State<FarmDashboardPage> {
       case 'labour':
         page = LabourPage(plotId: id, plotTitle: title);
         break;
+      case 'drip':
+        page = PlotSpraysPage(
+          plotId: id,
+          plotTitle: title,
+          plotName: name,
+          cropVariety: crop,
+          initialTab: 1,
+        );
+        break;
       case 'spray':
       default:
         page = PlotSpraysPage(
@@ -264,8 +279,6 @@ class _FarmDashboardPageState extends State<FarmDashboardPage> {
 
   @override
   Widget build(BuildContext context) {
-    const green = Color(0xFF2E7D32);
-
     if (_loading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
@@ -279,41 +292,82 @@ class _FarmDashboardPageState extends State<FarmDashboardPage> {
         child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
           children: [
+            // 1) Simple, personal greeting — no promotional copy.
             Text(
               _greeting(),
-              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
             ),
-            const SizedBox(height: 4),
+            const SizedBox(height: 20),
+
+            // 2) Quick actions — six farm-focused shortcuts, always visible.
             const Text(
-              'Keep farming, keep growing.',
-              style: TextStyle(color: Colors.grey),
+              'Quick actions',
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
             ),
-            const SizedBox(height: 16),
-            Card(
-              color: const Color(0xFFE8F5E9),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-              child: const Padding(
-                padding: EdgeInsets.all(16),
-                child: Row(
-                  children: [
-                    Icon(Icons.agriculture, color: green, size: 32),
-                    SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        'Manage your crops, expenses, labour, sprays and more — all in one place.',
-                        style: TextStyle(color: Color(0xFF1B5E20)),
-                      ),
-                    ),
-                  ],
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: _FbQuickAction(
+                    icon: Icons.science,
+                    label: 'Spray',
+                    onTap: () => _quickAction('spray'),
+                  ),
                 ),
-              ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _FbQuickAction(
+                    icon: Icons.opacity,
+                    label: 'Drip',
+                    onTap: () => _quickAction('drip'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _FbQuickAction(
+                    icon: Icons.groups,
+                    label: 'Labour',
+                    onTap: () => _quickAction('labour'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: _FbQuickAction(
+                    icon: Icons.local_pharmacy,
+                    label: 'Chemicals',
+                    onTap: () => _quickAction('chemicals'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _FbQuickAction(
+                    icon: Icons.receipt_long,
+                    label: 'Expense',
+                    onTap: () => _quickAction('expense'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _FbQuickAction(
+                    icon: Icons.payments,
+                    label: 'Earnings',
+                    onTap: () => _quickAction('earning'),
+                  ),
+                ),
+              ],
             ),
             const SizedBox(height: 24),
+
+            // 3) Recent crops — simple and compact, no financial dashboards.
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 const Text(
-                  'Your crops',
+                  'Recent crops',
                   style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
                 ),
                 TextButton(
@@ -339,67 +393,6 @@ class _FarmDashboardPageState extends State<FarmDashboardPage> {
                 label: const Text('Add crop / plot'),
               ),
             ],
-            const SizedBox(height: 28),
-            const Text(
-              'Quick actions',
-              style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: _FbQuickAction(
-                    icon: Icons.receipt_long,
-                    label: 'Expense',
-                    onTap: () => _quickAction('expense'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: _FbQuickAction(
-                    icon: Icons.payments,
-                    label: 'Earning',
-                    onTap: () => _quickAction('earning'),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  child: _FbQuickAction(
-                    icon: Icons.science,
-                    label: 'Spray',
-                    onTap: () => _quickAction('spray'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: _FbQuickAction(
-                    icon: Icons.groups,
-                    label: 'Labour',
-                    onTap: () => _quickAction('labour'),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 28),
-            const Text(
-              'Recent activity',
-              style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            if (_recentActivity.isEmpty)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 12),
-                child: Text(
-                  'No farm activity yet. Add a spray, expense or earning to see it here.',
-                  style: TextStyle(color: Colors.grey),
-                ),
-              )
-            else
-              ..._recentActivity.map((item) => _FbActivityTile(item: item)),
           ],
         ),
       ),
@@ -560,51 +553,6 @@ class _FbQuickAction extends StatelessWidget {
   }
 }
 
-class _FbActivityTile extends StatelessWidget {
-  const _FbActivityTile({required this.item});
-  final Map<String, dynamic> item;
-
-  IconData get _icon {
-    switch (item['type']) {
-      case 'spray':
-        return Icons.science;
-      case 'drip':
-        return Icons.water_drop;
-      case 'labour':
-        return Icons.groups;
-      case 'expense':
-        return Icons.receipt_long;
-      case 'earning':
-        return Icons.payments;
-      default:
-        return Icons.circle;
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final subtitle = item['subtitle']?.toString() ?? '';
-    DateTime? created;
-    try {
-      created = DateTime.parse(item['created_at'].toString());
-    } catch (_) {
-      created = null;
-    }
-    return ListTile(
-      contentPadding: EdgeInsets.zero,
-      leading: CircleAvatar(
-        backgroundColor: const Color(0xFFE8F5E9),
-        child: Icon(_icon, color: const Color(0xFF2E7D32), size: 20),
-      ),
-      title: Text(item['title'].toString()),
-      subtitle: Text(
-        subtitle.isEmpty
-            ? (created == null ? '' : formatDate(created))
-            : (created == null ? subtitle : '$subtitle • ${formatDate(created)}'),
-      ),
-    );
-  }
-}
 
 // ============================================================
 // MORE PAGE
@@ -1977,7 +1925,8 @@ class _PlotHistoryPageState extends State<PlotHistoryPage> {
     Widget page=PlotOverviewPage(plotId:id,plotTitle:plot['title'].toString(),plotName:plot['plot_name'].toString(),cropVariety:plot['crop_variety'].toString());
     if(direct && last!=null){
       final title=plot['title'].toString(), name=plot['plot_name'].toString(), crop=plot['crop_variety'].toString();
-      if(last=='spray'||last=='drip'){ page=PlotSpraysPage(plotId:id,plotTitle:title,plotName:name,cropVariety:crop); }
+      if(last=='spray'){ page=PlotSpraysPage(plotId:id,plotTitle:title,plotName:name,cropVariety:crop); }
+      else if(last=='drip'){ page=PlotSpraysPage(plotId:id,plotTitle:title,plotName:name,cropVariety:crop,initialTab:1); }
       else if(last=='labour'){ page=LabourPage(plotId:id,plotTitle:title); }
       else if(last=='other'){ page=OtherExpensesPage(plotId:id,plotTitle:title); }
       else if(last=='earnings'){ page=EarningsPage(plotId:id,plotTitle:title); }
@@ -2136,6 +2085,7 @@ class PlotOverviewPage extends StatefulWidget {
 class _PlotOverviewPageState extends State<PlotOverviewPage> {
   Map<String, double> totals = {};
   bool loading = true;
+  bool _hasEarnings = false;
 
   @override
   void initState() {
@@ -2145,8 +2095,12 @@ class _PlotOverviewPageState extends State<PlotOverviewPage> {
 
   Future<void> _load() async {
     totals = await AppDatabase.instance.plotTotals(widget.plotId);
+    final earnings = await AppDatabase.instance.getEarnings(widget.plotId);
     if (!mounted) return;
-    setState(() => loading = false);
+    setState(() {
+      _hasEarnings = earnings.isNotEmpty;
+      loading = false;
+    });
   }
 
   Future<void> _openSection(String page, Widget child) async {
@@ -2277,23 +2231,33 @@ class _PlotOverviewPageState extends State<PlotOverviewPage> {
                           const SizedBox(height: 10),
                           const Text('Total Earnings', style: TextStyle(color: Colors.grey)),
                           Text(
-                            fbMoney(earnings),
+                            _hasEarnings ? fbMoney(earnings) : '—',
                             style: const TextStyle(fontSize: 23, fontWeight: FontWeight.bold),
                           ),
                           const Divider(height: 28),
+                          // Never show a Profit/Loss figure before any
+                          // earning has actually been recorded — it would
+                          // just be the negative expense total, not a real
+                          // profit or loss.
                           Text(
-                            profit >= 0 ? 'PROFIT' : 'LOSS',
+                            _hasEarnings
+                                ? (profit >= 0 ? 'PROFIT' : 'LOSS')
+                                : 'PROFIT / LOSS',
                             style: TextStyle(
                               fontWeight: FontWeight.bold,
-                              color: profit >= 0 ? Colors.green.shade700 : Colors.red.shade700,
+                              color: !_hasEarnings
+                                  ? Colors.grey
+                                  : (profit >= 0 ? Colors.green.shade700 : Colors.red.shade700),
                             ),
                           ),
                           Text(
-                            fbMoney(profit.abs()),
+                            _hasEarnings ? fbMoney(profit.abs()) : '—',
                             style: TextStyle(
                               fontSize: 27,
                               fontWeight: FontWeight.bold,
-                              color: profit >= 0 ? Colors.green.shade700 : Colors.red.shade700,
+                              color: !_hasEarnings
+                                  ? Colors.grey
+                                  : (profit >= 0 ? Colors.green.shade700 : Colors.red.shade700),
                             ),
                           ),
                         ],
@@ -2323,6 +2287,7 @@ class _PlotOverviewPageState extends State<PlotOverviewPage> {
                         plotTitle: widget.plotTitle,
                         plotName: widget.plotName,
                         cropVariety: widget.cropVariety,
+                        initialTab: 1,
                       ),
                     ),
                   ),
@@ -2603,7 +2568,10 @@ class _EarningsPageState extends State<EarningsPage> {
     final existingAmount = row == null ? 0.0 : (row['amount'] as num).toDouble();
     final existingUnit = row?['unit']?.toString() ?? '';
 
-    bool totalOnly = row == null ? true : _isTotalOnly(row);
+    // Default new entries to the structured Yield × Rate form, so earnings
+    // are captured as proper records (crop, yield, rate) rather than a
+    // free-text total — matching how Spray records are entered.
+    bool totalOnly = row == null ? false : _isTotalOnly(row);
 
     final totalCtrl = TextEditingController(
       text: totalOnly && existingAmount != 0 ? formatNumber(existingAmount) : '',
@@ -2857,6 +2825,7 @@ class _EarningsPageState extends State<EarningsPage> {
                   color: const Color(0xFFE3F2FD),
                   child: ListTile(
                     title: const Text('Total Earnings'),
+                    subtitle: Text(widget.plotTitle),
                     trailing: Text(
                       fbMoney(total),
                       style: const TextStyle(
@@ -2867,39 +2836,75 @@ class _EarningsPageState extends State<EarningsPage> {
                     ),
                   ),
                 ),
+                if (rows.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 24),
+                    child: Text(
+                      'No earning records yet.\n\nUse "Add earning" to record a sale (crop yield × rate, or a total amount).',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.grey),
+                    ),
+                  ),
+                // Structured earning records — date, yield and rate — shown
+                // as cards, the same way Spray records are shown.
                 ...rows.map((row) {
                   final totalOnly = _isTotalOnly(row);
-                  final breakdown = totalOnly
-                      ? '— | —'
-                      : '${formatNumber((row['quantity'] as num).toDouble())} '
-                          '${row['unit']} × ₹${(row['price'] as num).toStringAsFixed(2)}';
+                  final date = formatDate(DateTime.parse(row['earning_date'].toString()));
+                  final desc = row['description'].toString();
+                  final amount = (row['amount'] as num).toDouble();
                   return Card(
-                    child: ListTile(
-                      title: Text(
-                        row['description'].toString(),
-                        style: const TextStyle(fontWeight: FontWeight.bold),
-                      ),
-                      subtitle: Text(
-                        '${formatDate(DateTime.parse(row['earning_date'].toString()))} • $breakdown',
-                      ),
-                      trailing: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(fbMoney((row['amount'] as num).toDouble())),
-                          PopupMenuButton<String>(
-                            onSelected: (v) {
-                              if (v == 'edit') {
-                                _form(row);
-                              } else {
-                                _delete(row['id'] as int);
-                              }
-                            },
-                            itemBuilder: (_) => const [
-                              PopupMenuItem(value: 'edit', child: Text('Edit')),
-                              PopupMenuItem(value: 'delete', child: Text('Delete')),
+                    margin: const EdgeInsets.only(bottom: 10),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(12),
+                      onTap: () => _form(row),
+                      child: Padding(
+                        padding: const EdgeInsets.all(14),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Text(
+                                  date,
+                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                                ),
+                                const Spacer(),
+                                Text(
+                                  fbMoney(amount),
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFF0D47A1),
+                                  ),
+                                ),
+                                PopupMenuButton<String>(
+                                  onSelected: (v) {
+                                    if (v == 'edit') {
+                                      _form(row);
+                                    } else {
+                                      _delete(row['id'] as int);
+                                    }
+                                  },
+                                  itemBuilder: (_) => const [
+                                    PopupMenuItem(value: 'edit', child: Text('Edit')),
+                                    PopupMenuItem(value: 'delete', child: Text('Delete')),
+                                  ],
+                                ),
+                              ],
+                            ),
+                            if (desc.isNotEmpty) ...[
+                              const SizedBox(height: 2),
+                              Text(desc, style: const TextStyle(color: Colors.grey)),
                             ],
-                          ),
-                        ],
+                            const SizedBox(height: 4),
+                            Text(
+                              totalOnly
+                                  ? 'Entered as total earning'
+                                  : 'Yield: ${formatNumber((row['quantity'] as num).toDouble())} '
+                                      '${row['unit']}   •   Rate: ₹${(row['price'] as num).toStringAsFixed(2)}/${row['unit']}',
+                              style: const TextStyle(color: Colors.grey),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   );
@@ -3141,7 +3146,94 @@ class _PesticideUsagePageState extends State<PesticideUsagePage> {
 }
 
 class FarmOverviewPage extends StatefulWidget { const FarmOverviewPage({super.key}); @override State<FarmOverviewPage> createState()=>_FarmOverviewPageState(); }
-class _FarmOverviewPageState extends State<FarmOverviewPage>{Map<String,double> totals={};bool loading=true;@override void initState(){super.initState();_load();}Future<void>_load()async{totals=await AppDatabase.instance.allPlotTotals();if(mounted)setState(()=>loading=false);}@override Widget build(BuildContext context){final profit=totals['profit']??0;return Scaffold(appBar:AppBar(title:const Text('Farm Overview')),body:loading?const Center(child:CircularProgressIndicator()):RefreshIndicator(onRefresh:_load,child:ListView(padding:const EdgeInsets.all(14),children:[Card(color:const Color(0xFFE3F2FD),child:Padding(padding:const EdgeInsets.all(18),child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[const Text('ALL PLOTS',style:TextStyle(fontWeight:FontWeight.bold,color:Color(0xFF0D47A1))),const SizedBox(height:12),Text('Total Expenses  ${fbMoney(totals['expense']??0)}'),Text('Total Earnings  ${fbMoney(totals['earnings']??0)}'),const Divider(),Text(profit>=0?'TOTAL PROFIT':'TOTAL LOSS',style:const TextStyle(fontWeight:FontWeight.bold)),Text(fbMoney(profit.abs()),style:TextStyle(fontSize:28,fontWeight:FontWeight.bold,color:profit>=0?Colors.green.shade700:Colors.red.shade700))]))),_farmTotal('Spray',totals['spray']??0),_farmTotal('Drip / Irrigation',totals['drip']??0),_farmTotal('Labour',totals['labour']??0),_farmTotal('Other Expenses',totals['other']??0)])));}Widget _farmTotal(String title,double value)=>Card(child:ListTile(title:Text(title),trailing:Text(fbMoney(value),style:const TextStyle(fontWeight:FontWeight.bold))));}
+class _FarmOverviewPageState extends State<FarmOverviewPage> {
+  Map<String, double> totals = {};
+  bool loading = true;
+  bool _hasEarnings = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    totals = await AppDatabase.instance.allPlotTotals();
+    var earningsCount = 0;
+    for (final plot in await AppDatabase.instance.getPlots()) {
+      final earnings = await AppDatabase.instance.getEarnings(plot['id'] as int);
+      earningsCount += earnings.length;
+      if (earningsCount > 0) break;
+    }
+    if (!mounted) return;
+    setState(() {
+      _hasEarnings = earningsCount > 0;
+      loading = false;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final expense = totals['expense'] ?? 0;
+    final earnings = totals['earnings'] ?? 0;
+    final profit = totals['profit'] ?? 0;
+    final profitColor = !_hasEarnings
+        ? Colors.grey
+        : (profit >= 0 ? Colors.green.shade700 : Colors.red.shade700);
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Farm Overview')),
+      body: loading
+          ? const Center(child: CircularProgressIndicator())
+          : RefreshIndicator(
+              onRefresh: _load,
+              child: ListView(
+                padding: const EdgeInsets.all(14),
+                children: [
+                  Card(
+                    color: const Color(0xFFE3F2FD),
+                    child: Padding(
+                      padding: const EdgeInsets.all(18),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'ALL PLOTS',
+                            style: TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF0D47A1)),
+                          ),
+                          const SizedBox(height: 12),
+                          Text('Total Expenses  ${fbMoney(expense)}'),
+                          Text('Total Earnings  ${_hasEarnings ? fbMoney(earnings) : '—'}'),
+                          const Divider(),
+                          Text(
+                            _hasEarnings ? (profit >= 0 ? 'TOTAL PROFIT' : 'TOTAL LOSS') : 'TOTAL PROFIT / LOSS',
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          Text(
+                            _hasEarnings ? fbMoney(profit.abs()) : '—',
+                            style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: profitColor),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  _farmTotal('Spray', totals['spray'] ?? 0),
+                  _farmTotal('Drip / Irrigation', totals['drip'] ?? 0),
+                  _farmTotal('Labour', totals['labour'] ?? 0),
+                  _farmTotal('Other Expenses', totals['other'] ?? 0),
+                ],
+              ),
+            ),
+    );
+  }
+
+  Widget _farmTotal(String title, double value) => Card(
+        child: ListTile(
+          title: Text(title),
+          trailing: Text(fbMoney(value), style: const TextStyle(fontWeight: FontWeight.bold)),
+        ),
+      );
+}
 
 // ============================================================
 // PLOT HISTORY / SPRAY + DRIP PAGE
@@ -3154,12 +3246,16 @@ class PlotSpraysPage extends StatefulWidget {
     required this.plotTitle,
     required this.plotName,
     required this.cropVariety,
+    this.initialTab = 0,
   });
 
   final int plotId;
   final String plotTitle;
   final String plotName;
   final String cropVariety;
+
+  /// 0 = Spray tab, 1 = Drip tab.
+  final int initialTab;
 
   @override
   State<PlotSpraysPage> createState() => _PlotSpraysPageState();
@@ -3174,6 +3270,7 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
   @override
   void initState() {
     super.initState();
+    _recordTab = widget.initialTab;
     _loadRecords();
   }
 
@@ -3335,13 +3432,14 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
 
     return DefaultTabController(
       length: 2,
+      initialIndex: widget.initialTab,
       child: Scaffold(
         appBar: AppBar(
           title: Text(widget.plotTitle),
           bottom: TabBar(
           onTap: (index) => setState(() => _recordTab = index),
           tabs: const [
-            Tab(icon: Icon(Icons.water_drop_outlined), text: 'Spray'),
+            Tab(icon: Icon(Icons.science_outlined), text: 'Spray'),
             Tab(icon: Icon(Icons.opacity_outlined), text: 'Drip'),
           ],
         ),
@@ -3450,183 +3548,103 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
                       ),
                     )
                   : ListView(
-                      padding: const EdgeInsets.only(bottom: 120),
+                      padding: const EdgeInsets.fromLTRB(12, 12, 12, 120),
                       children: [
                         Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                          padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
                           child: Text(
                             _recordTab == 0
-                                 ? 'Spray records are shown here. Tap a row to edit it.'
-                                 : 'Drip records are shown here. Tap a row to edit it.',
+                                 ? 'Spray records are shown here. Tap a card to edit it.'
+                                 : 'Drip records are shown here. Tap a card to edit it.',
                             style: const TextStyle(color: Colors.grey),
                           ),
                         ),
-                        SingleChildScrollView(
-                          padding: const EdgeInsets.fromLTRB(8, 12, 8, 16),
-                          scrollDirection: Axis.horizontal,
-                          child: DataTable(
-                            columnSpacing: 22,
-                            headingRowColor: WidgetStateProperty.all(
-                              const Color(0xFFE3F2FD),
-                            ),
-                            columns: const [
-                              DataColumn(
-                                label: Text(
-                                  'No.',
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    color: Color(0xFF0D47A1),
-                                  ),
-                                ),
-                              ),
-                              DataColumn(
-                                label: Text(
-                                  'Type',
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    color: Color(0xFF0D47A1),
-                                  ),
-                                ),
-                              ),
-                              DataColumn(
-                                label: Text(
-                                  'Date',
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    color: Color(0xFF0D47A1),
-                                  ),
-                                ),
-                              ),
-                              DataColumn(
-                                label: Text(
-                                  'Chemical / dosage',
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    color: Color(0xFF0D47A1),
-                                  ),
-                                ),
-                              ),
-                              DataColumn(
-                                label: Text(
-                                  'Water / Acres',
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    color: Color(0xFF0D47A1),
-                                  ),
-                                ),
-                              ),
-                              DataColumn(
-                                label: Text(
-                                  'Cost',
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    color: Color(0xFF0D47A1),
-                                  ),
-                                ),
-                              ),
-                              DataColumn(
-                                label: Text(
-                                  'Notes',
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    color: Color(0xFF0D47A1),
-                                  ),
-                                ),
-                              ),
-                              DataColumn(
-                                label: Text(
-                                  'Action',
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    color: Color(0xFF0D47A1),
-                                  ),
-                                ),
-                              ),
-                            ],
-                            rows: List.generate(visibleRecords.length, (index) {
-                              final record = visibleRecords[index];
-                              final date =
-                                  DateTime.parse(record['date'].toString());
-                              final isSpray = record['record_type'] == 'Spray';
-                              final quantity =
-                                  (record['quantity'] as num).toDouble();
-                              final cost =
-                                  (record['total_cost'] as num).toDouble();
+                        // Compact cards instead of a horizontally-scrolling
+                        // table, so everything is readable on one screen.
+                        ...List.generate(visibleRecords.length, (index) {
+                          final record = visibleRecords[index];
+                          final date = DateTime.parse(record['date'].toString());
+                          final isSpray = record['record_type'] == 'Spray';
+                          final quantity = (record['quantity'] as num).toDouble();
+                          final cost = (record['total_cost'] as num).toDouble();
+                          final notes = record['notes'].toString();
 
-                              return DataRow(
-                                onSelectChanged: (_) => _openRecord(record),
-                                cells: [
-                                  DataCell(Text('${index + 1}')),
-                                  DataCell(
-                                    Chip(
-                                      label: Text(
-                                        isSpray ? 'SPRAY' : 'DRIP',
-                                        style: const TextStyle(fontSize: 11),
-                                      ),
-                                      avatar: Icon(
-                                        isSpray
-                                            ? Icons.water_drop
-                                            : Icons.opacity,
-                                        size: 16,
-                                      ),
+                          return Card(
+                            margin: const EdgeInsets.only(bottom: 10),
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(12),
+                              onTap: () => _openRecord(record),
+                              child: Padding(
+                                padding: const EdgeInsets.all(14),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Text(
+                                          formatDate(date),
+                                          style: const TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 15,
+                                          ),
+                                        ),
+                                        const Spacer(),
+                                        Text(
+                                          '₹${cost.toStringAsFixed(2)}',
+                                          style: const TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            color: Color(0xFF0D47A1),
+                                          ),
+                                        ),
+                                        IconButton(
+                                          tooltip: 'Delete',
+                                          visualDensity: VisualDensity.compact,
+                                          onPressed: () => _deleteRecord(record),
+                                          icon: const Icon(
+                                            Icons.delete_outline,
+                                            color: Colors.red,
+                                            size: 20,
+                                          ),
+                                        ),
+                                      ],
                                     ),
-                                  ),
-                                  DataCell(Text(formatDate(date))),
-                                  DataCell(
-                                    SizedBox(
-                                      width: 260,
-                                      child: Text(record['chemicals'].toString()),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      record['chemicals'].toString().isEmpty
+                                          ? 'No chemicals recorded'
+                                          : record['chemicals'].toString(),
                                     ),
-                                  ),
-                                  DataCell(
+                                    const SizedBox(height: 4),
                                     Text(
                                       isSpray
-                                          ? '${formatNumber(quantity)} L'
-                                          : '${formatNumber(quantity)} acres',
+                                          ? 'Water: ${formatNumber(quantity)} L'
+                                          : 'Area: ${formatNumber(quantity)} acres',
+                                      style: const TextStyle(color: Colors.grey),
                                     ),
-                                  ),
-                                  DataCell(
-                                    Text('₹${cost.toStringAsFixed(2)}'),
-                                  ),
-                                  DataCell(
-                                    SizedBox(
-                                      width: 220,
-                                      child: Text(
-                                        record['notes'].toString().isEmpty
-                                            ? '-'
-                                            : record['notes'].toString(),
+                                    if (notes.isNotEmpty) ...[
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        'Notes: $notes',
+                                        style: const TextStyle(color: Colors.grey),
                                       ),
-                                    ),
-                                  ),
-                                  DataCell(
-                                    IconButton(
-                                      tooltip: 'Delete',
-                                      onPressed: () => _deleteRecord(record),
-                                      icon: const Icon(
-                                        Icons.delete_outline,
-                                        color: Colors.red,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              );
-                            }),
-                          ),
-                        ),
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-                          child: Card(
-                            color: const Color(0xFFE3F2FD),
-                            elevation: 0,
-                            child: Padding(
-                              padding: const EdgeInsets.all(16),
-                              child: Text(
-                                'Total cost: ₹${total.toStringAsFixed(2)}',
-                                style: const TextStyle(
-                                  fontSize: 20,
-                                  fontWeight: FontWeight.bold,
-                                  color: Color(0xFF0D47A1),
+                                    ],
+                                  ],
                                 ),
+                              ),
+                            ),
+                          );
+                        }),
+                        Card(
+                          color: const Color(0xFFE3F2FD),
+                          elevation: 0,
+                          child: Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: Text(
+                              'Total cost: ₹${total.toStringAsFixed(2)}',
+                              style: const TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFF0D47A1),
                               ),
                             ),
                           ),
