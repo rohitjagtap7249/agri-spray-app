@@ -3440,7 +3440,7 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
               : _records.isEmpty
                   ? Center(
                       child: Padding(
-                        padding: EdgeInsets.all(30),
+                        padding: const EdgeInsets.all(30),
                         child: Text(
                           _recordTab == 0
                              ? 'No spray records for this plot yet.\n\nUse "Add spray" to create a record.'
@@ -3458,7 +3458,7 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
                             _recordTab == 0
                                  ? 'Spray records are shown here. Tap a row to edit it.'
                                  : 'Drip records are shown here. Tap a row to edit it.',
-                            style: TextStyle(color: Colors.grey),
+                            style: const TextStyle(color: Colors.grey),
                           ),
                         ),
                         SingleChildScrollView(
