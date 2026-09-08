@@ -3291,9 +3291,9 @@ class _PesticideUsagePageState extends State<PesticideUsagePage> {
                                   border: Border.all(color: Colors.grey.shade400),
                                   borderRadius: BorderRadius.circular(4),
                                 ),
-                                child: Row(
+                                child: const Row(
                                   mainAxisSize: MainAxisSize.min,
-                                  children: const [
+                                  children: [
                                     Icon(Icons.sort),
                                     SizedBox(width: 4),
                                     Icon(Icons.arrow_drop_down),
