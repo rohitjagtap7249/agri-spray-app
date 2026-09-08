@@ -2550,15 +2550,6 @@ class _EarningsPageState extends State<EarningsPage> {
     if (mounted) setState(() => loading = false);
   }
 
-  /// An entry is treated as "total only" (no quantity × rate breakdown)
-  /// when both quantity and price are zero, which is how [addEarning]
-  /// stores entries created in that mode.
-  bool _isTotalOnly(Map<String, dynamic> row) {
-    final qty = (row['quantity'] as num).toDouble();
-    final price = (row['price'] as num).toDouble();
-    return qty == 0 && price == 0;
-  }
-
   Future<void> _form([Map<String, dynamic>? row]) async {
     final desc = TextEditingController(text: row?['description']?.toString() ?? '');
     final notes = TextEditingController(text: row?['notes']?.toString() ?? '');
@@ -2568,19 +2559,14 @@ class _EarningsPageState extends State<EarningsPage> {
     final existingAmount = row == null ? 0.0 : (row['amount'] as num).toDouble();
     final existingUnit = row?['unit']?.toString() ?? '';
 
-    // Default new entries to the structured Yield × Rate form, so earnings
-    // are captured as proper records (crop, yield, rate) rather than a
-    // free-text total — matching how Spray records are entered.
-    bool totalOnly = row == null ? false : _isTotalOnly(row);
-
-    final totalCtrl = TextEditingController(
-      text: totalOnly && existingAmount != 0 ? formatNumber(existingAmount) : '',
-    );
     final qtyCtrl = TextEditingController(
-      text: !totalOnly && existingQty != 0 ? formatNumber(existingQty) : '',
+      text: existingQty != 0 ? formatNumber(existingQty) : '',
     );
     final rateCtrl = TextEditingController(
-      text: !totalOnly && existingPrice != 0 ? formatNumber(existingPrice) : '',
+      text: existingPrice != 0 ? formatNumber(existingPrice) : '',
+    );
+    final amountCtrl = TextEditingController(
+      text: existingAmount != 0 ? formatNumber(existingAmount) : '',
     );
 
     String unit = kFbEarningUnits.contains(existingUnit)
@@ -2603,11 +2589,15 @@ class _EarningsPageState extends State<EarningsPage> {
       context: context,
       builder: (dc) => StatefulBuilder(
         builder: (dc, set) {
-          double calculatedTotal = 0;
-          if (!totalOnly) {
+          // Rate is optional. When it's provided, Amount is calculated
+          // automatically from Yield × Rate. When Rate is left blank, the
+          // farmer can key in the total earning directly (Yield can still
+          // be recorded either way, matching a simple sale record).
+          final rateProvided = rateCtrl.text.trim().isNotEmpty;
+          if (rateProvided) {
             final q = double.tryParse(qtyCtrl.text.trim()) ?? 0;
             final r = double.tryParse(rateCtrl.text.trim()) ?? 0;
-            calculatedTotal = q * r;
+            amountCtrl.text = formatNumber(q * r);
           }
           final unitLabel = unit == 'other'
               ? (customUnitCtrl.text.trim().isEmpty ? 'unit' : customUnitCtrl.text.trim())
@@ -2622,7 +2612,7 @@ class _EarningsPageState extends State<EarningsPage> {
                 children: [
                   TextField(
                     controller: desc,
-                    decoration: const InputDecoration(labelText: 'Description'),
+                    decoration: const InputDecoration(labelText: 'Description (optional)'),
                   ),
                   const SizedBox(height: 12),
                   if (row == null && _plots.length > 1) ...[
@@ -2644,69 +2634,64 @@ class _EarningsPageState extends State<EarningsPage> {
                     ),
                     const SizedBox(height: 12),
                   ],
-                  const Text('How do you want to enter this?'),
-                  RadioListTile<bool>(
-                    contentPadding: EdgeInsets.zero,
-                    dense: true,
-                    title: const Text('Enter total directly'),
-                    value: true,
-                    groupValue: totalOnly,
-                    onChanged: (v) => set(() => totalOnly = v ?? true),
-                  ),
-                  RadioListTile<bool>(
-                    contentPadding: EdgeInsets.zero,
-                    dense: true,
-                    title: const Text('Calculate from quantity sold × rate'),
-                    value: false,
-                    groupValue: totalOnly,
-                    onChanged: (v) => set(() => totalOnly = v ?? false),
-                  ),
-                  const SizedBox(height: 8),
-                  if (totalOnly)
-                    TextField(
-                      controller: totalCtrl,
-                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                      decoration: const InputDecoration(labelText: 'Total earning (₹)'),
-                    )
-                  else ...[
-                    TextField(
-                      controller: qtyCtrl,
-                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                      decoration: const InputDecoration(labelText: 'Quantity sold'),
-                      onChanged: (_) => set(() {}),
-                    ),
-                    const SizedBox(height: 12),
-                    DropdownButtonFormField<String>(
-                      value: unit,
-                      decoration: const InputDecoration(labelText: 'Unit'),
-                      items: kFbEarningUnits
-                          .map((u) => DropdownMenuItem(value: u, child: Text(u)))
-                          .toList(),
-                      onChanged: (v) {
-                        if (v != null) set(() => unit = v);
-                      },
-                    ),
-                    if (unit == 'other') ...[
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: customUnitCtrl,
-                        decoration: const InputDecoration(labelText: 'Custom unit'),
-                        onChanged: (_) => set(() {}),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        flex: 3,
+                        child: TextField(
+                          controller: qtyCtrl,
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          decoration: const InputDecoration(labelText: 'Yield (optional)'),
+                          onChanged: (_) => set(() {}),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        flex: 2,
+                        child: DropdownButtonFormField<String>(
+                          value: unit,
+                          decoration: const InputDecoration(labelText: 'Unit'),
+                          items: kFbEarningUnits
+                              .map((u) => DropdownMenuItem(value: u, child: Text(u)))
+                              .toList(),
+                          onChanged: (v) {
+                            if (v != null) set(() => unit = v);
+                          },
+                        ),
                       ),
                     ],
+                  ),
+                  if (unit == 'other') ...[
                     const SizedBox(height: 12),
                     TextField(
-                      controller: rateCtrl,
-                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                      decoration: InputDecoration(labelText: 'Rate / $unitLabel (₹)'),
+                      controller: customUnitCtrl,
+                      decoration: const InputDecoration(labelText: 'Custom unit'),
                       onChanged: (_) => set(() {}),
                     ),
-                    const SizedBox(height: 12),
-                    Text(
-                      'Total earning (calculated): ${fbMoney(calculatedTotal)}',
-                      style: const TextStyle(fontWeight: FontWeight.bold),
-                    ),
                   ],
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: rateCtrl,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: InputDecoration(
+                      labelText: 'Rate / $unitLabel (optional, ₹)',
+                    ),
+                    onChanged: (_) => set(() {}),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: amountCtrl,
+                    enabled: !rateProvided,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: InputDecoration(
+                      labelText: 'Total earning (₹)',
+                      helperText: rateProvided
+                          ? 'Calculated from yield × rate'
+                          : 'Enter the total earning directly',
+                    ),
+                    onChanged: (_) => set(() {}),
+                  ),
                   const SizedBox(height: 8),
                   ListTile(
                     contentPadding: EdgeInsets.zero,
@@ -2735,27 +2720,15 @@ class _EarningsPageState extends State<EarningsPage> {
               TextButton(onPressed: () => Navigator.pop(dc), child: const Text('Cancel')),
               FilledButton(
                 onPressed: () async {
-                  if (desc.text.trim().isEmpty) return;
+                  final q = double.tryParse(qtyCtrl.text.trim()) ?? 0;
+                  final r = double.tryParse(rateCtrl.text.trim()) ?? 0;
+                  final a = double.tryParse(amountCtrl.text.trim());
+                  if (a == null || a < 0) return;
+                  if (q < 0 || r < 0) return;
 
-                  double q = 0, p = 0, value;
-                  String savedUnit = '';
-
-                  if (totalOnly) {
-                    final t = double.tryParse(totalCtrl.text.trim());
-                    if (t == null || t < 0) return;
-                    value = t;
-                  } else {
-                    final parsedQty = double.tryParse(qtyCtrl.text.trim());
-                    final parsedRate = double.tryParse(rateCtrl.text.trim());
-                    if (parsedQty == null || parsedQty <= 0 || parsedRate == null || parsedRate < 0) {
-                      return;
-                    }
-                    q = parsedQty;
-                    p = parsedRate;
-                    savedUnit = unit == 'other' ? customUnitCtrl.text.trim() : unit;
-                    if (savedUnit.isEmpty) return;
-                    value = q * p;
-                  }
+                  final savedUnit = q > 0
+                      ? (unit == 'other' ? customUnitCtrl.text.trim() : unit)
+                      : '';
 
                   if (row == null) {
                     await AppDatabase.instance.addEarning(
@@ -2764,8 +2737,8 @@ class _EarningsPageState extends State<EarningsPage> {
                       description: desc.text,
                       quantity: q,
                       unit: savedUnit,
-                      price: p,
-                      amount: value,
+                      price: r,
+                      amount: a,
                       notes: notes.text,
                     );
                   } else {
@@ -2775,8 +2748,8 @@ class _EarningsPageState extends State<EarningsPage> {
                       description: desc.text,
                       quantity: q,
                       unit: savedUnit,
-                      price: p,
-                      amount: value,
+                      price: r,
+                      amount: a,
                       notes: notes.text,
                     );
                   }
@@ -2793,7 +2766,7 @@ class _EarningsPageState extends State<EarningsPage> {
 
     desc.dispose();
     notes.dispose();
-    totalCtrl.dispose();
+    amountCtrl.dispose();
     qtyCtrl.dispose();
     rateCtrl.dispose();
     customUnitCtrl.dispose();
@@ -2806,7 +2779,30 @@ class _EarningsPageState extends State<EarningsPage> {
 
   @override
   Widget build(BuildContext context) {
-    final total = rows.fold<double>(0, (sum, row) => sum + (row['amount'] as num).toDouble());
+    // Table rows are shown oldest-first with a running row number, and a
+    // totals row at the bottom — total yield and total earning — matching
+    // how a farmer would keep this in a notebook.
+    final sorted = [...rows]..sort((a, b) => DateTime.parse(a['earning_date'].toString())
+        .compareTo(DateTime.parse(b['earning_date'].toString())));
+    final totalAmount = rows.fold<double>(0, (sum, row) => sum + (row['amount'] as num).toDouble());
+    final totalYield = rows.fold<double>(0, (sum, row) => sum + (row['quantity'] as num).toDouble());
+    final yieldUnit = rows
+        .map((r) => r['unit'].toString())
+        .firstWhere((u) => u.isNotEmpty, orElse: () => 'kg');
+
+    Widget cell(String text, {bool bold = false, TextAlign align = TextAlign.left}) {
+      return Expanded(
+        child: Text(
+          text,
+          textAlign: align,
+          style: TextStyle(
+            fontWeight: bold ? FontWeight.bold : FontWeight.normal,
+            fontSize: 13,
+          ),
+        ),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(title: Text('${widget.plotTitle} • Earnings')),
       floatingActionButton: FloatingActionButton.extended(
@@ -2818,99 +2814,89 @@ class _EarningsPageState extends State<EarningsPage> {
       ),
       body: loading
           ? const Center(child: CircularProgressIndicator())
-          : ListView(
-              padding: const EdgeInsets.fromLTRB(12, 12, 12, 100),
-              children: [
-                Card(
-                  color: const Color(0xFFE3F2FD),
-                  child: ListTile(
-                    title: const Text('Total Earnings'),
-                    subtitle: Text(widget.plotTitle),
-                    trailing: Text(
-                      fbMoney(total),
-                      style: const TextStyle(
-                        fontSize: 19,
-                        fontWeight: FontWeight.bold,
-                        color: Color(0xFF0D47A1),
-                      ),
-                    ),
-                  ),
-                ),
-                if (rows.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 24),
+          : rows.isEmpty
+              ? const Center(
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 24),
                     child: Text(
-                      'No earning records yet.\n\nUse "Add earning" to record a sale (crop yield × rate, or a total amount).',
+                      'No earning records yet.\n\nUse "Add earning" to record a sale (yield × rate, or a total amount).',
                       textAlign: TextAlign.center,
                       style: TextStyle(color: Colors.grey),
                     ),
                   ),
-                // Structured earning records — date, yield and rate — shown
-                // as cards, the same way Spray records are shown.
-                ...rows.map((row) {
-                  final totalOnly = _isTotalOnly(row);
-                  final date = formatDate(DateTime.parse(row['earning_date'].toString()));
-                  final desc = row['description'].toString();
-                  final amount = (row['amount'] as num).toDouble();
-                  return Card(
-                    margin: const EdgeInsets.only(bottom: 10),
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(12),
-                      onTap: () => _form(row),
-                      child: Padding(
-                        padding: const EdgeInsets.all(14),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                Text(
-                                  date,
-                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-                                ),
-                                const Spacer(),
-                                Text(
-                                  fbMoney(amount),
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    color: Color(0xFF0D47A1),
-                                  ),
-                                ),
-                                PopupMenuButton<String>(
-                                  onSelected: (v) {
-                                    if (v == 'edit') {
-                                      _form(row);
-                                    } else {
-                                      _delete(row['id'] as int);
-                                    }
-                                  },
-                                  itemBuilder: (_) => const [
-                                    PopupMenuItem(value: 'edit', child: Text('Edit')),
-                                    PopupMenuItem(value: 'delete', child: Text('Delete')),
-                                  ],
-                                ),
-                              ],
-                            ),
-                            if (desc.isNotEmpty) ...[
-                              const SizedBox(height: 2),
-                              Text(desc, style: const TextStyle(color: Colors.grey)),
-                            ],
-                            const SizedBox(height: 4),
-                            Text(
-                              totalOnly
-                                  ? 'Entered as total earning'
-                                  : 'Yield: ${formatNumber((row['quantity'] as num).toDouble())} '
-                                      '${row['unit']}   •   Rate: ₹${(row['price'] as num).toStringAsFixed(2)}/${row['unit']}',
-                              style: const TextStyle(color: Colors.grey),
-                            ),
-                          ],
-                        ),
+                )
+              : ListView(
+                  padding: const EdgeInsets.fromLTRB(10, 10, 10, 100),
+                  children: [
+                    // Header row
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+                      child: Row(
+                        children: [
+                          const SizedBox(width: 22, child: Text('No.', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12))),
+                          cell('Date', bold: true),
+                          cell('Yield', bold: true, align: TextAlign.right),
+                          cell('Rate', bold: true, align: TextAlign.right),
+                          cell('Amount', bold: true, align: TextAlign.right),
+                          const SizedBox(width: 28),
+                        ],
                       ),
                     ),
-                  );
-                }),
-              ],
-            ),
+                    const Divider(height: 1),
+                    ...List.generate(sorted.length, (index) {
+                      final row = sorted[index];
+                      final qty = (row['quantity'] as num).toDouble();
+                      final price = (row['price'] as num).toDouble();
+                      final amount = (row['amount'] as num).toDouble();
+                      final unit = row['unit'].toString();
+                      final date = formatDate(DateTime.parse(row['earning_date'].toString()));
+
+                      return InkWell(
+                        onTap: () => _form(row),
+                        onLongPress: () => _delete(row['id'] as int),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 10),
+                          child: Row(
+                            children: [
+                              SizedBox(width: 22, child: Text('${index + 1}', style: const TextStyle(fontSize: 13))),
+                              cell(date),
+                              cell(qty > 0 ? '${formatNumber(qty)}$unit' : '—', align: TextAlign.right),
+                              cell(price > 0 ? '₹${formatNumber(price)}' : '—', align: TextAlign.right),
+                              cell(fbMoney(amount), bold: true, align: TextAlign.right),
+                              SizedBox(
+                                width: 28,
+                                child: IconButton(
+                                  padding: EdgeInsets.zero,
+                                  visualDensity: VisualDensity.compact,
+                                  icon: const Icon(Icons.delete_outline, color: Colors.red, size: 18),
+                                  onPressed: () => _delete(row['id'] as int),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    }),
+                    const Divider(height: 1, thickness: 1),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 10),
+                      child: Row(
+                        children: [
+                          const SizedBox(width: 22),
+                          cell('Total', bold: true),
+                          cell(
+                            totalYield > 0 ? '${formatNumber(totalYield)}$yieldUnit' : '—',
+                            bold: true,
+                            align: TextAlign.right,
+                          ),
+                          cell('', align: TextAlign.right),
+                          cell(fbMoney(totalAmount), bold: true, align: TextAlign.right),
+                          const SizedBox(width: 28),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
     );
   }
 }
@@ -3267,6 +3253,11 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
   bool _loading = true;
   String? _loadError;
 
+  // On/off switch for showing the chemical breakdown line (e.g. "Tata
+  // Bahaar 2ml + M45 2gm") on each record card. Off by default keeps each
+  // card small; the farmer can turn it on when they want the detail.
+  bool _showChemicals = false;
+
   @override
   void initState() {
     super.initState();
@@ -3445,6 +3436,13 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
         ),
         actions: [
           IconButton(
+            tooltip: _showChemicals ? 'Hide chemical usage' : 'Show chemical usage',
+            onPressed: () => setState(() => _showChemicals = !_showChemicals),
+            icon: Icon(
+              _showChemicals ? Icons.visibility : Icons.visibility_off_outlined,
+            ),
+          ),
+          IconButton(
             tooltip: 'Plot information',
             onPressed: () {
               showDialog<void>(
@@ -3570,12 +3568,12 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
                           final notes = record['notes'].toString();
 
                           return Card(
-                            margin: const EdgeInsets.only(bottom: 10),
+                            margin: const EdgeInsets.only(bottom: 8),
                             child: InkWell(
                               borderRadius: BorderRadius.circular(12),
                               onTap: () => _openRecord(record),
                               child: Padding(
-                                padding: const EdgeInsets.all(14),
+                                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
@@ -3585,7 +3583,7 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
                                           formatDate(date),
                                           style: const TextStyle(
                                             fontWeight: FontWeight.bold,
-                                            fontSize: 15,
+                                            fontSize: 14,
                                           ),
                                         ),
                                         const Spacer(),
@@ -3594,6 +3592,7 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
                                           style: const TextStyle(
                                             fontWeight: FontWeight.bold,
                                             color: Color(0xFF0D47A1),
+                                            fontSize: 14,
                                           ),
                                         ),
                                         IconButton(
@@ -3603,29 +3602,35 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
                                           icon: const Icon(
                                             Icons.delete_outline,
                                             color: Colors.red,
-                                            size: 20,
+                                            size: 18,
                                           ),
                                         ),
                                       ],
                                     ),
-                                    const SizedBox(height: 4),
-                                    Text(
-                                      record['chemicals'].toString().isEmpty
-                                          ? 'No chemicals recorded'
-                                          : record['chemicals'].toString(),
-                                    ),
-                                    const SizedBox(height: 4),
+                                    // Chemical breakdown is optional and off
+                                    // by default — toggle via the eye icon
+                                    // in the app bar — so cards stay compact.
+                                    if (_showChemicals) ...[
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        record['chemicals'].toString().isEmpty
+                                            ? 'No chemicals recorded'
+                                            : record['chemicals'].toString(),
+                                        style: const TextStyle(fontSize: 12),
+                                      ),
+                                    ],
+                                    const SizedBox(height: 2),
                                     Text(
                                       isSpray
                                           ? 'Water: ${formatNumber(quantity)} L'
                                           : 'Area: ${formatNumber(quantity)} acres',
-                                      style: const TextStyle(color: Colors.grey),
+                                      style: const TextStyle(color: Colors.grey, fontSize: 12),
                                     ),
                                     if (notes.isNotEmpty) ...[
-                                      const SizedBox(height: 4),
+                                      const SizedBox(height: 2),
                                       Text(
                                         'Notes: $notes',
-                                        style: const TextStyle(color: Colors.grey),
+                                        style: const TextStyle(color: Colors.grey, fontSize: 12),
                                       ),
                                     ],
                                   ],
