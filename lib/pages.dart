@@ -3641,11 +3641,11 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
       );
     }
 
-    final waterFlex = 1.05;
-    final costFlex = 1.25;
-    final actionFlex = 0.9;
-    final dateFlex = 1.45;
-    final chemicalFlex = 2.8;
+    const waterFlex = 1.05;
+    const costFlex = 1.25;
+    const actionFlex = 0.9;
+    const dateFlex = 1.45;
+    const chemicalFlex = 2.8;
 
     return Column(
       children: [
