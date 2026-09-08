@@ -11,6 +11,16 @@ import 'database.dart';
 import 'helpers.dart';
 import 'models.dart';
 
+
+/// Compact date for dense mobile tables, e.g. 5 Sep or 1 Jan.
+String compactFarmDate(DateTime date) {
+  const months = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+  ];
+  return '${date.day} ${months[date.month - 1]}';
+}
+
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
@@ -2877,10 +2887,10 @@ class _EarningsPageState extends State<EarningsPage> {
                       child: Row(
                         children: [
                           headerCell('No.', 8, align: TextAlign.center),
-                          headerCell('Date', 23),
-                          headerCell('Yield', 20, align: TextAlign.right),
-                          headerCell('Rate', 19, align: TextAlign.right),
-                          headerCell('Amount', 25, align: TextAlign.right),
+                          headerCell('Date', 21),
+                          headerCell('Yield', 18, align: TextAlign.right),
+                          headerCell('Rate', 17, align: TextAlign.right),
+                          headerCell('Amount', 31, align: TextAlign.right),
                           const SizedBox(width: 25),
                         ],
                       ),
@@ -2892,7 +2902,7 @@ class _EarningsPageState extends State<EarningsPage> {
                       final amount = (row['amount'] as num).toDouble();
                       final unit = row['unit'].toString();
                       final date =
-                          formatDate(DateTime.parse(row['earning_date'].toString()));
+                          compactFarmDate(DateTime.parse(row['earning_date'].toString()));
 
                       return Material(
                         color: index.isEven
@@ -2932,7 +2942,7 @@ class _EarningsPageState extends State<EarningsPage> {
                                 ),
                                 valueCell(
                                   fbMoney(amount),
-                                  25,
+                                  31,
                                   bold: true,
                                   align: TextAlign.right,
                                 ),
@@ -3641,11 +3651,11 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
       );
     }
 
-    const waterFlex = 1.05;
-    const costFlex = 1.25;
+    const waterFlex = 1.0;
+    const costFlex = 1.6;
     const actionFlex = 0.9;
-    const dateFlex = 1.45;
-    const chemicalFlex = 2.8;
+    const dateFlex = 1.2;
+    const chemicalFlex = 2.55;
 
     return Column(
       children: [
@@ -3696,9 +3706,9 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
                   children: [
                     _dataCell(
                       Text(
-                        formatDate(date),
+                        compactFarmDate(date),
                         maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+                        softWrap: false,
                         style: const TextStyle(
                           fontSize: 10.5,
                           fontWeight: FontWeight.w600,
@@ -3731,9 +3741,9 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
                     ),
                     _dataCell(
                       Text(
-                        '₹${cost.toStringAsFixed(2)}',
+                        fbMoney(cost),
                         maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+                        softWrap: false,
                         style: const TextStyle(
                           fontSize: 10.5,
                           fontWeight: FontWeight.bold,
