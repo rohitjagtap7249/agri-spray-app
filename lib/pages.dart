@@ -3041,16 +3041,34 @@ class PesticideUsagePage extends StatefulWidget {
   State<PesticideUsagePage> createState() => _PesticideUsagePageState();
 }
 
+enum _PesticideSort { alphabetical, mostUsed }
+
 class _PesticideUsagePageState extends State<PesticideUsagePage> {
   bool _loading = true;
   String? _error;
   List<Map<String, dynamic>> _rows = [];
   int? _selectedYear;
 
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
+  _PesticideSort _sortMode = _PesticideSort.alphabetical;
+
   @override
   void initState() {
     super.initState();
+    _searchController.addListener(() {
+      final query = _searchController.text.trim().toLowerCase();
+      if (query != _searchQuery) {
+        setState(() => _searchQuery = query);
+      }
+    });
     _load();
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -3092,12 +3110,14 @@ class _PesticideUsagePageState extends State<PesticideUsagePage> {
         (row['dosage'] as num).toDouble();
   }
 
-  // Prefer the dosage unit saved with the spray-chemical row. Older rows may
-  // only have the chemical's configured unit, so fall back to that.
+  // Prefer the chemical's current configured unit (set in Chemical
+  // Database) so usage always reflects the latest unit even if it was
+  // changed after older sprays were logged. Fall back to the unit saved
+  // with the spray-chemical row for legacy rows with no chemical unit.
   String _sourceUnit(Map<String, dynamic> row) {
-    final dosageUnit = row['dosage_unit']?.toString().trim() ?? '';
-    if (dosageUnit.isNotEmpty) return dosageUnit;
-    return row['unit']?.toString().trim() ?? '';
+    final chemicalUnit = row['unit']?.toString().trim() ?? '';
+    if (chemicalUnit.isNotEmpty) return chemicalUnit;
+    return row['dosage_unit']?.toString().trim() ?? '';
   }
 
   String _unitKey(String unit) {
@@ -3132,6 +3152,20 @@ class _PesticideUsagePageState extends State<PesticideUsagePage> {
     return value.toStringAsFixed(3).replaceFirst(RegExp(r'0+$'), '').replaceFirst(RegExp(r'\.$'), '');
   }
 
+  // Number of times each chemical was sprayed in the selected year, used to
+  // rank chemicals by "most used" (e.g. Tata Bahaar sprayed most often
+  // shows on top).
+  Map<String, int> _usageCounts(int? year) {
+    final counts = <String, int>{};
+    for (final row in _rows) {
+      if (year != null && _rowYear(row) != year) continue;
+      final name = row['chemical_name'].toString().trim();
+      if (name.isEmpty) continue;
+      counts[name] = (counts[name] ?? 0) + 1;
+    }
+    return counts;
+  }
+
   Map<String, Map<String, double>> _groupedForYear(int? year) {
     final result = <String, Map<String, double>>{};
     for (final row in _rows) {
@@ -3157,6 +3191,21 @@ class _PesticideUsagePageState extends State<PesticideUsagePage> {
     final years = _availableYears();
     final selected = _selectedYear;
     final grouped = _groupedForYear(selected);
+    final counts = _usageCounts(selected);
+
+    // Search filter, then sort by name (A-Z) or by how often the chemical
+    // was sprayed this year (most used first).
+    final entries = grouped.entries
+        .where((e) =>
+            _searchQuery.isEmpty || e.key.toLowerCase().contains(_searchQuery))
+        .toList()
+      ..sort((a, b) {
+        if (_sortMode == _PesticideSort.mostUsed) {
+          final byCount = (counts[b.key] ?? 0).compareTo(counts[a.key] ?? 0);
+          if (byCount != 0) return byCount;
+        }
+        return a.key.toLowerCase().compareTo(b.key.toLowerCase());
+      });
 
     return Scaffold(
       appBar: AppBar(
@@ -3198,6 +3247,62 @@ class _PesticideUsagePageState extends State<PesticideUsagePage> {
                               .toList(),
                           onChanged: (value) => setState(() => _selectedYear = value),
                         ),
+                      if (years.isNotEmpty) const SizedBox(height: 10),
+                      if (years.isNotEmpty)
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: TextField(
+                                controller: _searchController,
+                                decoration: InputDecoration(
+                                  labelText: 'Search chemical',
+                                  prefixIcon: const Icon(Icons.search),
+                                  suffixIcon: _searchQuery.isEmpty
+                                      ? null
+                                      : IconButton(
+                                          icon: const Icon(Icons.clear),
+                                          onPressed: () =>
+                                              _searchController.clear(),
+                                        ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            PopupMenuButton<_PesticideSort>(
+                              tooltip: 'Sort',
+                              initialValue: _sortMode,
+                              onSelected: (mode) =>
+                                  setState(() => _sortMode = mode),
+                              itemBuilder: (context) => const [
+                                PopupMenuItem(
+                                  value: _PesticideSort.alphabetical,
+                                  child: Text('Sort: A to Z'),
+                                ),
+                                PopupMenuItem(
+                                  value: _PesticideSort.mostUsed,
+                                  child: Text('Sort: Most used'),
+                                ),
+                              ],
+                              child: Container(
+                                height: 56,
+                                padding: const EdgeInsets.symmetric(horizontal: 12),
+                                decoration: BoxDecoration(
+                                  border: Border.all(color: Colors.grey.shade400),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: const [
+                                    Icon(Icons.sort),
+                                    SizedBox(width: 4),
+                                    Icon(Icons.arrow_drop_down),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
                       if (years.isEmpty)
                         const Card(
                           child: Padding(
@@ -3208,7 +3313,18 @@ class _PesticideUsagePageState extends State<PesticideUsagePage> {
                             ),
                           ),
                         ),
-                      ...grouped.entries.map((entry) {
+                      if (years.isNotEmpty && entries.isEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 24),
+                          child: Center(
+                            child: Text(
+                              'No chemicals match "${_searchController.text.trim()}".',
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(color: Colors.grey),
+                            ),
+                          ),
+                        ),
+                      ...entries.map((entry) {
                         final cropRows = <String, double>{};
                         final cropUnits = <String, String>{};
                         for (final item in entry.value.entries) {

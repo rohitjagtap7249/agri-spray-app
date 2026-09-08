@@ -85,6 +85,7 @@ class AppDatabase {
         await _createDripTables(db);
         await _createFinanceTables(db);
         await _addChemicalUnitColumn(db);
+        await _repairChemicalLinks(db);
       },
     );
   }
@@ -96,6 +97,32 @@ class AppDatabase {
       await db.execute(
         "ALTER TABLE chemicals ADD COLUMN unit TEXT NOT NULL DEFAULT ''",
       );
+    }
+  }
+
+  /// Re-links spray_chemicals / drip_chemicals rows to the correct current
+  /// chemical when chemical_id no longer matches a chemical with the same
+  /// name (e.g. chemical_id pointed at a stale/unrelated row after a
+  /// restore, or after a chemical was deleted and re-added with a new id).
+  /// Matching by name (case-insensitive) is safe because chemical names are
+  /// enforced unique. Rows whose name has no matching chemical are left
+  /// untouched. This is cheap and idempotent, so it's safe to run on every
+  /// app open.
+  Future<void> _repairChemicalLinks(Database db) async {
+    for (final table in ['spray_chemicals', 'drip_chemicals']) {
+      await db.rawUpdate('''
+        UPDATE $table
+        SET chemical_id = (
+          SELECT c.id FROM chemicals c
+          WHERE c.name = $table.chemical_name COLLATE NOCASE
+          LIMIT 1
+        )
+        WHERE EXISTS (
+          SELECT 1 FROM chemicals c
+          WHERE c.name = $table.chemical_name COLLATE NOCASE
+            AND c.id != COALESCE($table.chemical_id, -1)
+        )
+      ''');
     }
   }
 
@@ -933,6 +960,33 @@ class AppDatabase {
     await db.transaction((txn) async {
       final plotIdMap = <int, int>{};
 
+      // Backups do not include the chemicals table (it's a shared, global
+      // database, not per-plot). The chemical_id saved on old spray_chemicals
+      // / drip_chemicals rows is only a foreign key into the ORIGINAL
+      // database's chemicals table, and its numeric id has no guarantee of
+      // still pointing at the same chemical here (chemicals may have been
+      // added in a different order, deleted and re-added, etc). Re-resolve
+      // it by matching the chemical's name against the CURRENT chemicals
+      // table instead of trusting the old numeric id — otherwise a restored
+      // row can silently attach to an unrelated chemical and show that
+      // chemical's unit/price instead of the one actually used.
+      final chemicalIdByName = <String, int?>{};
+      Future<int?> resolveChemicalId(String name) async {
+        final key = name.trim().toLowerCase();
+        if (key.isEmpty) return null;
+        if (chemicalIdByName.containsKey(key)) return chemicalIdByName[key];
+        final rows = await txn.query(
+          'chemicals',
+          columns: ['id'],
+          where: 'name = ? COLLATE NOCASE',
+          whereArgs: [name.trim()],
+          limit: 1,
+        );
+        final id = rows.isNotEmpty ? rows.first['id'] as int : null;
+        chemicalIdByName[key] = id;
+        return id;
+      }
+
       // Match plots by their user-visible information. If the plot already
       // exists, reuse it rather than creating a duplicate plot.
       for (final item in rawPlots) {
@@ -1054,7 +1108,7 @@ class AppDatabase {
 
           await txn.insert('spray_chemicals', {
             'spray_id': newSprayId,
-            'chemical_id': _backupInt(chemical['chemical_id']),
+            'chemical_id': await resolveChemicalId(name),
             'chemical_name': name,
             'dosage': dosage,
             'price_per_unit': price,
@@ -1125,7 +1179,7 @@ class AppDatabase {
 
           await txn.insert('drip_chemicals', {
             'drip_id': newDripId,
-            'chemical_id': _backupInt(chemical['chemical_id']),
+            'chemical_id': await resolveChemicalId(name),
             'chemical_name': name,
             'dosage': dosage,
             'dosage_unit': unit,
