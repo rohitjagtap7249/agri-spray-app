@@ -2779,25 +2779,65 @@ class _EarningsPageState extends State<EarningsPage> {
 
   @override
   Widget build(BuildContext context) {
-    // Table rows are shown oldest-first with a running row number, and a
-    // totals row at the bottom — total yield and total earning — matching
-    // how a farmer would keep this in a notebook.
-    final sorted = [...rows]..sort((a, b) => DateTime.parse(a['earning_date'].toString())
-        .compareTo(DateTime.parse(b['earning_date'].toString())));
-    final totalAmount = rows.fold<double>(0, (sum, row) => sum + (row['amount'] as num).toDouble());
-    final totalYield = rows.fold<double>(0, (sum, row) => sum + (row['quantity'] as num).toDouble());
+    final sorted = [...rows]
+      ..sort(
+        (a, b) => DateTime.parse(a['earning_date'].toString())
+            .compareTo(DateTime.parse(b['earning_date'].toString())),
+      );
+
+    final totalAmount = rows.fold<double>(
+      0,
+      (sum, row) => sum + (row['amount'] as num).toDouble(),
+    );
+    final totalYield = rows.fold<double>(
+      0,
+      (sum, row) => sum + (row['quantity'] as num).toDouble(),
+    );
     final yieldUnit = rows
         .map((r) => r['unit'].toString())
         .firstWhere((u) => u.isNotEmpty, orElse: () => 'kg');
 
-    Widget cell(String text, {bool bold = false, TextAlign align = TextAlign.left}) {
+    Widget headerCell(String text, int flex, {TextAlign align = TextAlign.left}) {
       return Expanded(
-        child: Text(
-          text,
-          textAlign: align,
-          style: TextStyle(
-            fontWeight: bold ? FontWeight.bold : FontWeight.normal,
-            fontSize: 13,
+        flex: flex,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 10),
+          child: Text(
+            text,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            textAlign: align,
+            style: const TextStyle(
+              fontWeight: FontWeight.bold,
+              fontSize: 11,
+              color: Color(0xFF315B88),
+            ),
+          ),
+        ),
+      );
+    }
+
+    Widget valueCell(
+      String text,
+      int flex, {
+      bool bold = false,
+      TextAlign align = TextAlign.left,
+    }) {
+      return Expanded(
+        flex: flex,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 11),
+          child: Text(
+            text,
+            maxLines: 1,
+            softWrap: false,
+            overflow: TextOverflow.ellipsis,
+            textAlign: align,
+            style: TextStyle(
+              fontWeight: bold ? FontWeight.bold : FontWeight.normal,
+              fontSize: 11,
+              color: bold ? const Color(0xFF17395C) : null,
+            ),
           ),
         ),
       );
@@ -2828,70 +2868,153 @@ class _EarningsPageState extends State<EarningsPage> {
               : ListView(
                   padding: const EdgeInsets.fromLTRB(10, 10, 10, 100),
                   children: [
-                    // Header row
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+                    Container(
+                      decoration: const BoxDecoration(
+                        color: Color(0xFFE8F2FD),
+                        borderRadius:
+                            BorderRadius.vertical(top: Radius.circular(12)),
+                      ),
                       child: Row(
                         children: [
-                          const SizedBox(width: 22, child: Text('No.', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12))),
-                          cell('Date', bold: true),
-                          cell('Yield', bold: true, align: TextAlign.right),
-                          cell('Rate', bold: true, align: TextAlign.right),
-                          cell('Amount', bold: true, align: TextAlign.right),
-                          const SizedBox(width: 28),
+                          headerCell('No.', 8, align: TextAlign.center),
+                          headerCell('Date', 23),
+                          headerCell('Yield', 20, align: TextAlign.right),
+                          headerCell('Rate', 19, align: TextAlign.right),
+                          headerCell('Amount', 25, align: TextAlign.right),
+                          const SizedBox(width: 25),
                         ],
                       ),
                     ),
-                    const Divider(height: 1),
                     ...List.generate(sorted.length, (index) {
                       final row = sorted[index];
                       final qty = (row['quantity'] as num).toDouble();
                       final price = (row['price'] as num).toDouble();
                       final amount = (row['amount'] as num).toDouble();
                       final unit = row['unit'].toString();
-                      final date = formatDate(DateTime.parse(row['earning_date'].toString()));
+                      final date =
+                          formatDate(DateTime.parse(row['earning_date'].toString()));
 
-                      return InkWell(
-                        onTap: () => _form(row),
-                        onLongPress: () => _delete(row['id'] as int),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 10),
-                          child: Row(
-                            children: [
-                              SizedBox(width: 22, child: Text('${index + 1}', style: const TextStyle(fontSize: 13))),
-                              cell(date),
-                              cell(qty > 0 ? '${formatNumber(qty)}$unit' : '—', align: TextAlign.right),
-                              cell(price > 0 ? '₹${formatNumber(price)}' : '—', align: TextAlign.right),
-                              cell(fbMoney(amount), bold: true, align: TextAlign.right),
-                              SizedBox(
-                                width: 28,
-                                child: IconButton(
-                                  padding: EdgeInsets.zero,
-                                  visualDensity: VisualDensity.compact,
-                                  icon: const Icon(Icons.delete_outline, color: Colors.red, size: 18),
-                                  onPressed: () => _delete(row['id'] as int),
-                                ),
+                      return Material(
+                        color: index.isEven
+                            ? Colors.white
+                            : const Color(0xFFFAFCFF),
+                        child: InkWell(
+                          onTap: () => _form(row),
+                          child: Container(
+                            decoration: const BoxDecoration(
+                              border: Border(
+                                left: BorderSide(color: Color(0xFFDCE8F4)),
+                                right: BorderSide(color: Color(0xFFDCE8F4)),
+                                bottom: BorderSide(color: Color(0xFFDCE8F4)),
                               ),
-                            ],
+                            ),
+                            child: Row(
+                              children: [
+                                valueCell(
+                                  '${index + 1}',
+                                  8,
+                                  align: TextAlign.center,
+                                ),
+                                valueCell(date, 23),
+                                valueCell(
+                                  qty > 0
+                                      ? '${formatNumber(qty)} $unit'
+                                      : '—',
+                                  20,
+                                  align: TextAlign.right,
+                                ),
+                                valueCell(
+                                  price > 0
+                                      ? '₹${formatNumber(price)}'
+                                      : '—',
+                                  19,
+                                  align: TextAlign.right,
+                                ),
+                                valueCell(
+                                  fbMoney(amount),
+                                  25,
+                                  bold: true,
+                                  align: TextAlign.right,
+                                ),
+                                SizedBox(
+                                  width: 25,
+                                  child: IconButton(
+                                    padding: EdgeInsets.zero,
+                                    constraints: const BoxConstraints(
+                                      minWidth: 25,
+                                      minHeight: 32,
+                                    ),
+                                    visualDensity: VisualDensity.compact,
+                                    icon: const Icon(
+                                      Icons.delete_outline,
+                                      color: Colors.red,
+                                      size: 18,
+                                    ),
+                                    onPressed: () =>
+                                        _delete(row['id'] as int),
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
                       );
                     }),
-                    const Divider(height: 1, thickness: 1),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 10),
+                    Container(
+                      decoration: const BoxDecoration(
+                        color: Color(0xFFE9F7F1),
+                        borderRadius: BorderRadius.vertical(
+                          bottom: Radius.circular(12),
+                        ),
+                      ),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 13,
+                      ),
                       child: Row(
                         children: [
-                          const SizedBox(width: 22),
-                          cell('Total', bold: true),
-                          cell(
-                            totalYield > 0 ? '${formatNumber(totalYield)}$yieldUnit' : '—',
-                            bold: true,
-                            align: TextAlign.right,
+                          const Expanded(
+                            flex: 31,
+                            child: Text(
+                              'Total',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 13,
+                              ),
+                            ),
                           ),
-                          cell('', align: TextAlign.right),
-                          cell(fbMoney(totalAmount), bold: true, align: TextAlign.right),
-                          const SizedBox(width: 28),
+                          Expanded(
+                            flex: 20,
+                            child: Text(
+                              totalYield > 0
+                                  ? '${formatNumber(totalYield)} $yieldUnit'
+                                  : '—',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              textAlign: TextAlign.right,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 12,
+                                color: Color(0xFF00796B),
+                              ),
+                            ),
+                          ),
+                          const Spacer(flex: 19),
+                          Expanded(
+                            flex: 25,
+                            child: Text(
+                              fbMoney(totalAmount),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              textAlign: TextAlign.right,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 13,
+                                color: Color(0xFF00796B),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 25),
                         ],
                       ),
                     ),
@@ -2959,9 +3082,22 @@ class _PesticideUsagePageState extends State<PesticideUsagePage> {
         (row['dosage'] as num).toDouble();
   }
 
+  // Prefer the dosage unit saved with the spray-chemical row. Older rows may
+  // only have the chemical's configured unit, so fall back to that.
+  String _sourceUnit(Map<String, dynamic> row) {
+    final dosageUnit = row['dosage_unit']?.toString().trim() ?? '';
+    if (dosageUnit.isNotEmpty) return dosageUnit;
+    return row['unit']?.toString().trim() ?? '';
+  }
+
   String _unitKey(String unit) {
     final u = unit.trim().toLowerCase();
-    if (u == 'ml' || u == 'l' || u == 'litre' || u == 'liter' || u == 'litres' || u == 'liters') {
+    if (u == 'ml' ||
+        u == 'l' ||
+        u == 'litre' ||
+        u == 'liter' ||
+        u == 'litres' ||
+        u == 'liters') {
       return 'L';
     }
     if (u == 'gram' || u == 'g' || u == 'grams' || u == 'kg') {
@@ -2972,9 +3108,11 @@ class _PesticideUsagePageState extends State<PesticideUsagePage> {
 
   double _normalizedUsage(Map<String, dynamic> row) {
     final value = _rawUsage(row);
-    final unit = row['unit']?.toString().trim().toLowerCase() ?? '';
+    final unit = _sourceUnit(row).toLowerCase();
     if (unit == 'ml') return value / 1000.0;
-    if (unit == 'gram' || unit == 'g' || unit == 'grams') return value / 1000.0;
+    if (unit == 'gram' || unit == 'g' || unit == 'grams') {
+      return value / 1000.0;
+    }
     return value;
   }
 
@@ -2993,7 +3131,7 @@ class _PesticideUsagePageState extends State<PesticideUsagePage> {
       final crop = row['crop_variety'].toString().trim().isEmpty
           ? row['plot_title'].toString().trim()
           : row['crop_variety'].toString().trim();
-      final unit = _unitKey(row['unit']?.toString() ?? '');
+      final unit = _unitKey(_sourceUnit(row));
       final amount = _normalizedUsage(row);
       final pesticide = result.putIfAbsent(name, () => {});
       // A chemical's configured unit determines the normalized display unit.
@@ -3253,10 +3391,23 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
   bool _loading = true;
   String? _loadError;
 
-  // On/off switch for showing the chemical breakdown line (e.g. "Tata
-  // Bahaar 2ml + M45 2gm") on each record card. Off by default keeps each
-  // card small; the farmer can turn it on when they want the detail.
-  bool _showChemicals = false;
+  // When off, only chemical names are shown. When on, each chemical also
+  // shows the saved dosage, for example "Tata Bahaar (2 ml) + Soloman (1 ml)".
+  bool _showDosage = false;
+
+  String _chemicalWithDosage(Map<String, dynamic> chemical) {
+    final name = chemical['chemical_name'].toString().trim();
+    final dosageRaw = chemical['dosage'];
+    final dosage = dosageRaw is num
+        ? formatNumber(dosageRaw.toDouble())
+        : '';
+    final unit = chemical['dosage_unit']?.toString().trim() ??
+        chemical['unit']?.toString().trim() ??
+        '';
+
+    if (dosage.isEmpty || dosage == '0') return name;
+    return unit.isEmpty ? '$name ($dosage)' : '$name ($dosage $unit)';
+  }
 
   @override
   void initState() {
@@ -3274,7 +3425,8 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
     }
 
     try {
-      final sprays = await AppDatabase.instance.getSpraysForPlot(widget.plotId);
+      final sprays =
+          await AppDatabase.instance.getSpraysForPlot(widget.plotId);
       final drips =
           await AppDatabase.instance.getDripApplicationsForPlot(widget.plotId);
 
@@ -3293,6 +3445,8 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
           'chemicals': chemicals
               .map((c) => c['chemical_name'].toString())
               .join(' + '),
+          'chemicals_dosage':
+              chemicals.map(_chemicalWithDosage).join(' + '),
           'original': spray,
         });
       }
@@ -3308,11 +3462,10 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
           'total_cost': (drip['total_cost'] as num).toDouble(),
           'notes': drip['notes'].toString(),
           'chemicals': chemicals
-              .map(
-                (c) =>
-                    '${c['chemical_name']} (${formatNumber((c['dosage'] as num).toDouble())} ${c['dosage_unit']})',
-              )
+              .map((c) => c['chemical_name'].toString())
               .join(' + '),
+          'chemicals_dosage':
+              chemicals.map(_chemicalWithDosage).join(' + '),
           'original': drip,
         });
       }
@@ -3409,17 +3562,278 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final visibleRecords = _records
-        .where((record) => _recordTab == 0
-            ? record['record_type'] == 'Spray'
-            : record['record_type'] == 'Drip')
-        .toList();
-    final total = visibleRecords.fold<double>(
+  Widget _headerCell(
+    String text,
+    double flex, {
+    IconData? icon,
+    TextAlign align = TextAlign.left,
+  }) {
+    return Expanded(
+      flex: (flex * 100).round(),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 9),
+        child: Row(
+          mainAxisAlignment: align == TextAlign.right
+              ? MainAxisAlignment.end
+              : MainAxisAlignment.start,
+          children: [
+            if (icon != null) ...[
+              Icon(icon, size: 14, color: const Color(0xFF0D47A1)),
+              const SizedBox(width: 3),
+            ],
+            Flexible(
+              child: Text(
+                text,
+                textAlign: align,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF315B88),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _dataCell(
+    Widget child,
+    double flex, {
+    TextAlign align = TextAlign.left,
+  }) {
+    return Expanded(
+      flex: (flex * 100).round(),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 10),
+        child: Align(
+          alignment: align == TextAlign.right
+              ? Alignment.centerRight
+              : Alignment.centerLeft,
+          child: child,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRecordTable(
+    List<Map<String, dynamic>> records,
+    bool isSpray,
+  ) {
+    final total = records.fold<double>(
       0,
       (sum, record) => sum + (record['total_cost'] as num).toDouble(),
     );
+
+    if (records.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 50, horizontal: 24),
+        child: Text(
+          isSpray
+              ? 'No spray records for this plot yet.\n\nUse "Add spray" to create a record.'
+              : 'No drip records for this plot yet.\n\nUse "Add drip application" to create a record.',
+          textAlign: TextAlign.center,
+          style: const TextStyle(color: Colors.grey),
+        ),
+      );
+    }
+
+    final waterFlex = 1.05;
+    final costFlex = 1.25;
+    final actionFlex = 0.9;
+    final dateFlex = 1.45;
+    final chemicalFlex = 2.8;
+
+    return Column(
+      children: [
+        Container(
+          decoration: const BoxDecoration(
+            color: Color(0xFFE8F2FD),
+            borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
+          ),
+          child: Row(
+            children: [
+              _headerCell('Date', dateFlex, icon: Icons.calendar_today_outlined),
+              _headerCell('Chemicals', chemicalFlex, icon: Icons.eco_outlined),
+              _headerCell(
+                isSpray ? 'Water' : 'Area',
+                waterFlex,
+                icon: isSpray
+                    ? Icons.water_drop_outlined
+                    : Icons.square_foot_outlined,
+              ),
+              _headerCell('Cost', costFlex, icon: Icons.currency_rupee, align: TextAlign.right),
+              _headerCell('Action', actionFlex, icon: Icons.settings_outlined, align: TextAlign.center),
+            ],
+          ),
+        ),
+        ...List.generate(records.length, (index) {
+          final record = records[index];
+          final date = DateTime.parse(record['date'].toString());
+          final quantity = (record['quantity'] as num).toDouble();
+          final cost = (record['total_cost'] as num).toDouble();
+          final chemicalText = _showDosage
+              ? record['chemicals_dosage'].toString()
+              : record['chemicals'].toString();
+
+          return Material(
+            color: index.isEven ? Colors.white : const Color(0xFFFAFCFF),
+            child: InkWell(
+              onTap: () => _openRecord(record),
+              child: Container(
+                decoration: const BoxDecoration(
+                  border: Border(
+                    left: BorderSide(color: Color(0xFFDCE8F4)),
+                    right: BorderSide(color: Color(0xFFDCE8F4)),
+                    bottom: BorderSide(color: Color(0xFFDCE8F4)),
+                  ),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    _dataCell(
+                      Text(
+                        formatDate(date),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      dateFlex,
+                    ),
+                    _dataCell(
+                      Text(
+                        chemicalText.isEmpty ? 'No chemical' : chemicalText,
+                        maxLines: _showDosage ? 3 : 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 10.5),
+                      ),
+                      chemicalFlex,
+                    ),
+                    _dataCell(
+                      Text(
+                        isSpray
+                            ? '${formatNumber(quantity)} L'
+                            : '${formatNumber(quantity)} ac',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 10.5,
+                          color: Colors.grey,
+                        ),
+                      ),
+                      waterFlex,
+                    ),
+                    _dataCell(
+                      Text(
+                        '₹${cost.toStringAsFixed(2)}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF0D47A1),
+                        ),
+                      ),
+                      costFlex,
+                      align: TextAlign.right,
+                    ),
+                    _dataCell(
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          IconButton(
+                            tooltip: 'Edit',
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                              minWidth: 24,
+                              minHeight: 32,
+                            ),
+                            visualDensity: VisualDensity.compact,
+                            icon: const Icon(
+                              Icons.edit_outlined,
+                              color: Color(0xFF315B88),
+                              size: 17,
+                            ),
+                            onPressed: () => _openRecord(record),
+                          ),
+                          IconButton(
+                            tooltip: 'Delete',
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                              minWidth: 24,
+                              minHeight: 32,
+                            ),
+                            visualDensity: VisualDensity.compact,
+                            icon: const Icon(
+                              Icons.delete_outline,
+                              color: Colors.red,
+                              size: 17,
+                            ),
+                            onPressed: () => _deleteRecord(record),
+                          ),
+                        ],
+                      ),
+                      actionFlex,
+                      align: TextAlign.center,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        }),
+        Container(
+          decoration: BoxDecoration(
+            color: const Color(0xFFE9F7F1),
+            borderRadius: const BorderRadius.vertical(bottom: Radius.circular(12)),
+            border: Border.all(color: const Color(0xFFDCE8F4)),
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          child: Row(
+            children: [
+              const Expanded(
+                flex: 425,
+                child: Text(
+                  'Total cost',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                ),
+              ),
+              Expanded(
+                flex: 125,
+                child: Text(
+                  '₹${total.toStringAsFixed(2)}',
+                  textAlign: TextAlign.right,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                    color: Color(0xFF00796B),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final visibleRecords = _records
+        .where(
+          (record) => _recordTab == 0
+              ? record['record_type'] == 'Spray'
+              : record['record_type'] == 'Drip',
+        )
+        .toList();
+
+    final isSpray = _recordTab == 0;
 
     return DefaultTabController(
       length: 2,
@@ -3428,55 +3842,60 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
         appBar: AppBar(
           title: Text(widget.plotTitle),
           bottom: TabBar(
-          onTap: (index) => setState(() => _recordTab = index),
-          tabs: const [
-            Tab(icon: Icon(Icons.science_outlined), text: 'Spray'),
-            Tab(icon: Icon(Icons.opacity_outlined), text: 'Drip'),
+            onTap: (index) => setState(() => _recordTab = index),
+            tabs: const [
+              Tab(icon: Icon(Icons.science_outlined), text: 'Spray'),
+              Tab(icon: Icon(Icons.opacity_outlined), text: 'Drip'),
+            ],
+          ),
+          actions: [
+            IconButton(
+              tooltip: _showDosage ? 'Hide dosage' : 'Show dosage',
+              onPressed: () => setState(() => _showDosage = !_showDosage),
+              icon: Icon(
+                _showDosage
+                    ? Icons.visibility
+                    : Icons.visibility_off_outlined,
+              ),
+            ),
+            IconButton(
+              tooltip: 'Plot information',
+              onPressed: () {
+                showDialog<void>(
+                  context: context,
+                  builder: (_) => AlertDialog(
+                    title: Text(widget.plotTitle),
+                    content: Text(
+                      'Plot: ${widget.plotName}\n'
+                      'Crop variety: ${widget.cropVariety}',
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(context),
+                        child: const Text('Close'),
+                      ),
+                    ],
+                  ),
+                );
+              },
+              icon: const Icon(Icons.info_outline),
+            ),
           ],
         ),
-        actions: [
-          IconButton(
-            tooltip: _showChemicals ? 'Hide chemical usage' : 'Show chemical usage',
-            onPressed: () => setState(() => _showChemicals = !_showChemicals),
-            icon: Icon(
-              _showChemicals ? Icons.visibility : Icons.visibility_off_outlined,
-            ),
-          ),
-          IconButton(
-            tooltip: 'Plot information',
-            onPressed: () {
-              showDialog<void>(
-                context: context,
-                builder: (_) => AlertDialog(
-                  title: Text(widget.plotTitle),
-                  content: Text(
-                    'Plot: ${widget.plotName}\n'
-                    'Crop variety: ${widget.cropVariety}',
-                  ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(context),
-                      child: const Text('Close'),
-                    ),
-                  ],
-                ),
+        floatingActionButton: SafeArea(
+          child: FloatingActionButton.extended(
+            heroTag: 'add_${isSpray ? 'spray' : 'drip'}_${widget.plotId}',
+            backgroundColor:
+                isSpray ? const Color(0xFF0D47A1) : Colors.teal.shade700,
+            foregroundColor: Colors.white,
+            onPressed: () async {
+              await AppDatabase.instance.setLastPage(
+                widget.plotId,
+                isSpray ? 'spray' : 'drip',
               );
-            },
-            icon: const Icon(Icons.info_outline),
-          ),
-        ],
-      ),
-      floatingActionButton: SafeArea(
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            FloatingActionButton.extended(
-              heroTag: 'add_spray_${widget.plotId}',
-              backgroundColor: const Color(0xFF0D47A1),
-              foregroundColor: Colors.white,
-              onPressed: () async {
-                await AppDatabase.instance.setLastPage(widget.plotId, 'spray');
-                if (!context.mounted) return;
+              if (!context.mounted) return;
+
+              if (isSpray) {
                 await Navigator.of(context).push(
                   MaterialPageRoute(
                     builder: (_) => AddSprayPage(
@@ -3485,19 +3904,7 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
                     ),
                   ),
                 );
-                await _loadRecords();
-              },
-              icon: const Icon(Icons.water_drop),
-              label: const Text('Add spray'),
-            ),
-            const SizedBox(width: 10),
-            FloatingActionButton.extended(
-              heroTag: 'add_drip_${widget.plotId}',
-              backgroundColor: Colors.teal.shade700,
-              foregroundColor: Colors.white,
-              onPressed: () async {
-                await AppDatabase.instance.setLastPage(widget.plotId, 'drip');
-                if (!context.mounted) return;
+              } else {
                 await Navigator.of(context).push(
                   MaterialPageRoute(
                     builder: (_) => AddDripPage(
@@ -3506,156 +3913,111 @@ class _PlotSpraysPageState extends State<PlotSpraysPage> {
                     ),
                   ),
                 );
-                await _loadRecords();
-              },
-              icon: const Icon(Icons.opacity),
-              label: const Text('Add drip application'),
-            ),
-          ],
-        ),
-      ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : _loadError != null
-              ? Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(30),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(_loadError!, textAlign: TextAlign.center),
-                        const SizedBox(height: 12),
-                        FilledButton(
-                          onPressed: _loadRecords,
-                          child: const Text('Retry'),
-                        ),
-                      ],
-                    ),
-                  ),
-                )
-              : _records.isEmpty
-                  ? Center(
-                      child: Padding(
-                        padding: const EdgeInsets.all(30),
-                        child: Text(
-                          _recordTab == 0
-                             ? 'No spray records for this plot yet.\n\nUse "Add spray" to create a record.'
-                             : 'No drip records for this plot yet.\n\nUse "Add drip application" to create a record.',
-                          textAlign: TextAlign.center,
-                        ),
-                      ),
-                    )
-                  : ListView(
-                      padding: const EdgeInsets.fromLTRB(12, 12, 12, 120),
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
-                          child: Text(
-                            _recordTab == 0
-                                 ? 'Spray records are shown here. Tap a card to edit it.'
-                                 : 'Drip records are shown here. Tap a card to edit it.',
-                            style: const TextStyle(color: Colors.grey),
-                          ),
-                        ),
-                        // Compact cards instead of a horizontally-scrolling
-                        // table, so everything is readable on one screen.
-                        ...List.generate(visibleRecords.length, (index) {
-                          final record = visibleRecords[index];
-                          final date = DateTime.parse(record['date'].toString());
-                          final isSpray = record['record_type'] == 'Spray';
-                          final quantity = (record['quantity'] as num).toDouble();
-                          final cost = (record['total_cost'] as num).toDouble();
-                          final notes = record['notes'].toString();
+              }
 
-                          return Card(
-                            margin: const EdgeInsets.only(bottom: 8),
-                            child: InkWell(
-                              borderRadius: BorderRadius.circular(12),
-                              onTap: () => _openRecord(record),
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Row(
-                                      children: [
-                                        Text(
-                                          formatDate(date),
-                                          style: const TextStyle(
-                                            fontWeight: FontWeight.bold,
-                                            fontSize: 14,
-                                          ),
-                                        ),
-                                        const Spacer(),
-                                        Text(
-                                          '₹${cost.toStringAsFixed(2)}',
-                                          style: const TextStyle(
-                                            fontWeight: FontWeight.bold,
-                                            color: Color(0xFF0D47A1),
-                                            fontSize: 14,
-                                          ),
-                                        ),
-                                        IconButton(
-                                          tooltip: 'Delete',
-                                          visualDensity: VisualDensity.compact,
-                                          onPressed: () => _deleteRecord(record),
-                                          icon: const Icon(
-                                            Icons.delete_outline,
-                                            color: Colors.red,
-                                            size: 18,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                    // Chemical breakdown is optional and off
-                                    // by default — toggle via the eye icon
-                                    // in the app bar — so cards stay compact.
-                                    if (_showChemicals) ...[
-                                      const SizedBox(height: 2),
-                                      Text(
-                                        record['chemicals'].toString().isEmpty
-                                            ? 'No chemicals recorded'
-                                            : record['chemicals'].toString(),
-                                        style: const TextStyle(fontSize: 12),
-                                      ),
-                                    ],
-                                    const SizedBox(height: 2),
-                                    Text(
-                                      isSpray
-                                          ? 'Water: ${formatNumber(quantity)} L'
-                                          : 'Area: ${formatNumber(quantity)} acres',
-                                      style: const TextStyle(color: Colors.grey, fontSize: 12),
-                                    ),
-                                    if (notes.isNotEmpty) ...[
-                                      const SizedBox(height: 2),
-                                      Text(
-                                        'Notes: $notes',
-                                        style: const TextStyle(color: Colors.grey, fontSize: 12),
-                                      ),
-                                    ],
-                                  ],
+              await _loadRecords();
+            },
+            icon: Icon(isSpray ? Icons.water_drop : Icons.opacity),
+            label: Text(isSpray ? 'Add spray' : 'Add drip application'),
+          ),
+        ),
+        body: _loading
+            ? const Center(child: CircularProgressIndicator())
+            : _loadError != null
+                ? Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(30),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(_loadError!, textAlign: TextAlign.center),
+                          const SizedBox(height: 12),
+                          FilledButton(
+                            onPressed: _loadRecords,
+                            child: const Text('Retry'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                : RefreshIndicator(
+                    onRefresh: _loadRecords,
+                    child: ListView(
+                      padding: const EdgeInsets.fromLTRB(10, 10, 10, 100),
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                isSpray
+                                    ? 'Spray Records'
+                                    : 'Drip Records',
+                                style: const TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                  color: Color(0xFF17395C),
                                 ),
                               ),
                             ),
-                          );
-                        }),
-                        Card(
-                          color: const Color(0xFFE3F2FD),
-                          elevation: 0,
-                          child: Padding(
-                            padding: const EdgeInsets.all(16),
-                            child: Text(
-                              'Total cost: ₹${total.toStringAsFixed(2)}',
-                              style: const TextStyle(
-                                fontSize: 20,
-                                fontWeight: FontWeight.bold,
-                                color: Color(0xFF0D47A1),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 5,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.teal.shade700,
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              child: Text(
+                                '${visibleRecords.length} records',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                ),
                               ),
                             ),
-                          ),
+                          ],
                         ),
+                        const SizedBox(height: 6),
+                        Row(
+                          children: [
+                            const Icon(
+                              Icons.visibility_outlined,
+                              size: 16,
+                              color: Color(0xFF0D47A1),
+                            ),
+                            const SizedBox(width: 5),
+                            const Text(
+                              'Show dosage',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(width: 5),
+                            Switch(
+                              value: _showDosage,
+                              onChanged: (value) =>
+                                  setState(() => _showDosage = value),
+                              materialTapTargetSize:
+                                  MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            const Spacer(),
+                            Text(
+                              isSpray ? 'Water in L' : 'Area in acres',
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: Colors.grey,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        _buildRecordTable(visibleRecords, isSpray),
                       ],
                     ),
+                  ),
       ),
     );
   }
